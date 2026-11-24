@@ -1,6 +1,6 @@
 with latest as (
     select *
-    from {{ ref('electricity_metrics_history') }}
+    from {{ ref('electricity_metrics_hourly_history') }}
     where known_until is null
 ),
 

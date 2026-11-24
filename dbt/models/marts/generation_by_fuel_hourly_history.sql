@@ -14,4 +14,4 @@ select
         partition by period, respondent, fueltype
         order by observed_at, inserted_at, ingestion_run_id
     ) as known_until
-from {{ ref('stg_eia930_fuel_type_data') }}
+from {{ ref('stg_eia930_fuel_type_hourly_vintages') }}

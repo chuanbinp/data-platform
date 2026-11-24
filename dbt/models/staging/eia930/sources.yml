@@ -4,7 +4,7 @@ sources:
   - name: eia930
     schema: "{{ env_var('DBT_BRONZE_SCHEMA', 'bronze') }}"
     tables:
-      - name: eia930_region_data
+      - name: eia930_region_hourly_vintages
         description: Changed-only hourly regional observations, including all vintages.
         columns:
           - name: period
@@ -19,7 +19,7 @@ sources:
             data_tests: [not_null]
           - name: ingestion_run_id
             data_tests: [not_null]
-      - name: eia930_fuel_type_data
+      - name: eia930_fuel_type_hourly_vintages
         description: Changed-only hourly generation by fuel, including all vintages.
         columns:
           - name: period

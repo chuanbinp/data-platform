@@ -55,9 +55,10 @@ class TestEIA930Dag(unittest.TestCase):
                 self.assertIsInstance(task, BashOperator)
                 self.assertEqual(task.trigger_rule, "all_success")
                 self.assertIn("{{ task.task_id }}", task.env["DBT_TARGET_PATH"])
-            self.assertIn(f"--select +stg_eia930_{name}", silver.bash_command)
-            self.assertNotIn(f"--select +stg_eia930_{name}+", silver.bash_command)
-            self.assertIn(f"--select stg_eia930_{name}+ --exclude stg_eia930_{name}", gold.bash_command)
+            model = f"stg_eia930_{name.removesuffix('_data')}_hourly_vintages"
+            self.assertIn(f"--select +{model}", silver.bash_command)
+            self.assertNotIn(f"--select +{model}+", silver.bash_command)
+            self.assertIn(f"--select {model}+ --exclude {model}", gold.bash_command)
         self.assertFalse(self.dag.catchup)
         self.assertEqual(self.dag.max_active_runs, 1)
 

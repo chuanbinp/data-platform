@@ -1,6 +1,6 @@
 with latest as (
     select *
-    from {{ ref('generation_by_fuel_history') }}
+    from {{ ref('generation_by_fuel_hourly_history') }}
     where known_until is null
 ),
 

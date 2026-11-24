@@ -23,11 +23,11 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.eia.gov/v2/electricity/rto"
 DATASETS = {
     "region-data": {
-        "table": "eia930_region_data",
+        "table": "eia930_region_hourly_vintages",
         "category_column": "type",
     },
     "fuel-type-data": {
-        "table": "eia930_fuel_type_data",
+        "table": "eia930_fuel_type_hourly_vintages",
         "category_column": "fueltype",
     },
 }
@@ -252,7 +252,7 @@ def _vintage_table_sql(schema: str, table: str, category: str) -> sql.Composable
         schema=sql.Identifier(schema),
         table=sql.Identifier(schema, table),
         category=sql.Identifier(category),
-        index=sql.Identifier(f"{table}_vintages_idx"),
+        index=sql.Identifier(f"{table}_lookup_idx"),
     )
 
 

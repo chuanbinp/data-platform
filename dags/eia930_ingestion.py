@@ -79,7 +79,7 @@ with DAG(
 ) as eia930_dag:
     for dataset in ("region-data", "fuel-type-data"):
         name = dataset.replace("-", "_")
-        model = f"stg_eia930_{name}"
+        model = f"stg_eia930_{name.removesuffix('_data')}_hourly_vintages"
         bronze = PythonOperator(
             task_id=f"bronze_{name}",
             python_callable=ingest_eia930,

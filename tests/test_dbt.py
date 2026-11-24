@@ -89,8 +89,8 @@ def test_staging_preserves_vintages_and_types(warehouse):
         result = run(command)
         assert result.returncode == 0, result.stdout + result.stderr
     for source_table, view in (
-        ("eia930_region_data", "electricity_region_hourly_vintages"),
-        ("eia930_fuel_type_data", "electricity_fuel_hourly_vintages"),
+        ("eia930_region_hourly_vintages", "electricity_metrics_hourly_vintages"),
+        ("eia930_fuel_type_hourly_vintages", "generation_by_fuel_hourly_vintages"),
     ):
         with psycopg.connect(dsn) as connection:
             rows = connection.execute(sql.SQL("""
@@ -110,7 +110,7 @@ def test_staging_preserves_vintages_and_types(warehouse):
     with psycopg.connect(dsn) as connection:
         # A missing latest value must not fall back to an older non-null version.
         assert connection.execute(sql.SQL("SELECT demand, demand_forecast FROM {}").format(
-            sql.Identifier(f"{target}_gold", "electricity_hourly_latest"),
+            sql.Identifier(f"{target}_gold", "electricity_metrics_hourly_latest"),
         )).fetchall() == [(None, None)]
         assert connection.execute(sql.SQL("SELECT solar_generation, wind_generation, solar_units FROM {}").format(
             sql.Identifier(f"{target}_gold", "generation_by_fuel_hourly_latest"),
@@ -118,7 +118,7 @@ def test_staging_preserves_vintages_and_types(warehouse):
 
 
 @pytest.mark.parametrize("dataset,mart", [
-    ("region-data", "electricity_hourly_latest"),
+    ("region-data", "electricity_metrics_hourly_latest"),
     ("fuel-type-data", "generation_by_fuel_hourly_latest"),
 ])
 def test_silver_and_gold_build_separately(warehouse, dataset, mart):
@@ -140,7 +140,7 @@ def test_silver_and_gold_build_separately(warehouse, dataset, mart):
 def test_each_build_validates_only_its_source(warehouse, column, value, dataset):
     dsn, source, _, run = warehouse
     table = DATASETS[dataset]["table"]
-    other = "eia930_fuel_type_data" if dataset == "region-data" else "eia930_region_data"
+    other = "eia930_fuel_type_hourly_vintages" if dataset == "region-data" else "eia930_region_hourly_vintages"
     with psycopg.connect(dsn) as connection:
         connection.execute(sql.SQL("UPDATE {} SET {} = %s WHERE ingestion_run_id = 'run-0'").format(
             sql.Identifier(source, table), sql.Identifier(column),
@@ -166,7 +166,7 @@ def test_gold_as_of_history_and_latest_pivot(warehouse):
             cursor.executemany(sql.SQL("""
                 INSERT INTO {} (period, respondent, type, value, value_units, observed_at, ingestion_run_id)
                 VALUES ('2026-11-01T00', 'NYIS', %s, %s, 'megawatthours', %s, %s)
-            """).format(sql.Identifier(source, "eia930_region_data")), [
+            """).format(sql.Identifier(source, "eia930_region_hourly_vintages")), [
                 ("DF", "12", datetime(2026, 11, 2, tzinfo=timezone.utc), "forecast-first"),
                 ("DF", "13", datetime(2026, 11, 2, 3, tzinfo=timezone.utc), "forecast-revised"),
                 ("NG", "8", datetime(2026, 11, 2, tzinfo=timezone.utc), "generation"),
@@ -175,13 +175,13 @@ def test_gold_as_of_history_and_latest_pivot(warehouse):
         connection.execute(sql.SQL("""
             INSERT INTO {} (period, respondent, fueltype, value, value_units, observed_at, ingestion_run_id)
             VALUES ('2026-11-01T00', 'NYIS', 'WND', '80', 'megawatthours', %s, 'wind')
-        """).format(sql.Identifier(source, "eia930_fuel_type_data")), (
+        """).format(sql.Identifier(source, "eia930_fuel_type_hourly_vintages")), (
             datetime(2026, 11, 2, tzinfo=timezone.utc),
         ))
         connection.execute(sql.SQL("""
             INSERT INTO {} (period, respondent, fueltype, value, value_units, observed_at, ingestion_run_id)
             VALUES ('2026-11-01T00', 'NYIS', 'BAT', '-7', 'megawatthours', %s, 'battery')
-        """).format(sql.Identifier(source, "eia930_fuel_type_data")), (
+        """).format(sql.Identifier(source, "eia930_fuel_type_hourly_vintages")), (
             datetime(2026, 11, 2, tzinfo=timezone.utc),
         ))
 
@@ -190,8 +190,8 @@ def test_gold_as_of_history_and_latest_pivot(warehouse):
     expected = Decimal("10.1234567890123456789")
     with psycopg.connect(dsn) as connection:
         for history, category, value_column in (
-            ("electricity_metrics_history", "metric = 'D'", "value"),
-            ("generation_by_fuel_history", "fueltype = 'SUN'", "generation"),
+            ("electricity_metrics_hourly_history", "metric = 'D'", "value"),
+            ("generation_by_fuel_hourly_history", "fueltype = 'SUN'", "generation"),
         ):
             relation = sql.Identifier(gold, history)
             versions = connection.execute(sql.SQL("""
@@ -217,7 +217,7 @@ def test_gold_as_of_history_and_latest_pivot(warehouse):
         assert connection.execute(sql.SQL("""
             SELECT demand, demand_forecast, net_generation, total_interchange, demand_units
             FROM {}
-        """).format(sql.Identifier(gold, "electricity_hourly_latest"))).fetchall() == [
+        """).format(sql.Identifier(gold, "electricity_metrics_hourly_latest"))).fetchall() == [
             (expected, Decimal("13"), Decimal("8"), Decimal("-2"), "megawatthours"),
         ]
         assert connection.execute(sql.SQL("""
@@ -234,8 +234,8 @@ def test_unmapped_fuel_code_fails_build(warehouse):
     with psycopg.connect(dsn) as connection:
         connection.execute(sql.SQL("""
             UPDATE {} SET fueltype = 'NEW' WHERE ingestion_run_id = 'run-0'
-        """).format(sql.Identifier(source, "eia930_fuel_type_data")))
-    result = run(select="+stg_eia930_fuel_type_data+")
+        """).format(sql.Identifier(source, "eia930_fuel_type_hourly_vintages")))
+    result = run(select="+stg_eia930_fuel_type_hourly_vintages+")
     assert result.returncode != 0
     assert "FAIL" in result.stdout
     assert "accepted_values" in result.stdout
@@ -257,8 +257,8 @@ def test_gold_tied_timestamps_have_one_current_version(warehouse):
     assert result.returncode == 0, result.stdout + result.stderr
     with psycopg.connect(dsn) as connection:
         for history, value_column in (
-            ("electricity_metrics_history", "value"),
-            ("generation_by_fuel_history", "generation"),
+            ("electricity_metrics_hourly_history", "value"),
+            ("generation_by_fuel_hourly_history", "generation"),
         ):
             assert connection.execute(sql.SQL("""
                 SELECT {}, ingestion_run_id FROM {} WHERE known_from <= %s

@@ -95,23 +95,23 @@ flowchart TD
     api --> download --> client --> ingest
 
     subgraph bronze["Bronze · source tables"]
-        region_raw["eia930_region_data"]
-        fuel_raw["eia930_fuel_type_data"]
+        region_raw["eia930_region_hourly_vintages"]
+        fuel_raw["eia930_fuel_type_hourly_vintages"]
     end
     ingest -->|region records| region_raw
     ingest -->|fuel records| fuel_raw
 
     subgraph silver["Silver · typed views; all vintages retained"]
-        region_typed["electricity_region_hourly_vintages<br/>UTC periods and numeric values"]
-        fuel_typed["electricity_fuel_hourly_vintages<br/>UTC periods and numeric values"]
+        region_typed["electricity_metrics_hourly_vintages<br/>UTC periods and numeric values"]
+        fuel_typed["generation_by_fuel_hourly_vintages<br/>UTC periods and numeric values"]
     end
     region_raw --> region_typed
     fuel_raw --> fuel_typed
 
     subgraph gold["Gold · analytics views"]
-        region_history["electricity_metrics_history<br/>Per-metric knowledge intervals"]
-        region_latest["electricity_hourly_latest<br/>One row per hour and respondent"]
-        fuel_history["generation_by_fuel_history<br/>Per-fuel knowledge intervals"]
+        region_history["electricity_metrics_hourly_history<br/>Per-metric knowledge intervals"]
+        region_latest["electricity_metrics_hourly_latest<br/>One row per hour and respondent"]
+        fuel_history["generation_by_fuel_hourly_history<br/>Per-fuel knowledge intervals"]
         fuel_latest["generation_by_fuel_hourly_latest<br/>One row per hour and respondent; fuel columns"]
         region_history -->|current versions; pivot metrics| region_latest
         fuel_history -->|current versions; pivot fuels| fuel_latest
@@ -142,16 +142,16 @@ and update view definitions.
 
 | View in `gold` | Grain |
 | --- | --- |
-| `electricity_metrics_history` | Hour × respondent × metric × version |
-| `electricity_hourly_latest` | Hour × respondent; demand, forecast, generation, and interchange columns |
-| `generation_by_fuel_history` | Hour × respondent × fuel × version |
+| `electricity_metrics_hourly_history` | Hour × respondent × metric × version |
+| `electricity_metrics_hourly_latest` | Hour × respondent; demand, forecast, generation, and interchange columns |
+| `generation_by_fuel_hourly_history` | Hour × respondent × fuel × version |
 | `generation_by_fuel_hourly_latest` | Hour × respondent; generation and unit columns per fuel |
 
 Use a point-in-time query to retrieve the versions observed as of a UTC cutoff:
 
 ```sql
 SELECT period, respondent, metric, value, value_units
-FROM gold.electricity_metrics_history
+FROM gold.electricity_metrics_hourly_history
 WHERE known_from <= TIMESTAMPTZ '2026-11-24 00:00:00+00'
   AND (known_until > TIMESTAMPTZ '2026-11-24 00:00:00+00'
        OR known_until IS NULL);

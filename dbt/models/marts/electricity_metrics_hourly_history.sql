@@ -14,4 +14,4 @@ select
         partition by period, respondent, type
         order by observed_at, inserted_at, ingestion_run_id
     ) as known_until
-from {{ ref('stg_eia930_region_data') }}
+from {{ ref('stg_eia930_region_hourly_vintages') }}

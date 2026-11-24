@@ -67,8 +67,8 @@ def response(rows, total=None):
 
 
 @pytest.mark.parametrize("dataset,source_key,table,column", [
-    ("region-data", "type", "eia930_region_data", "type"),
-    ("fuel-type-data", "fueltype", "eia930_fuel_type_data", "fueltype"),
+    ("region-data", "type", "eia930_region_hourly_vintages", "type"),
+    ("fuel-type-data", "fueltype", "eia930_fuel_type_hourly_vintages", "fueltype"),
 ])
 def test_cli_ingests_correct_dataset(monkeypatch, capsys, dataset, source_key, table, column):
     record = observation(source_key)
@@ -146,8 +146,8 @@ def raw_database():
 
 @pytest.mark.integration
 @pytest.mark.parametrize("dataset,source_key,table", [
-    ("region-data", "type", "eia930_region_data"),
-    ("fuel-type-data", "fueltype", "eia930_fuel_type_data"),
+    ("region-data", "type", "eia930_region_hourly_vintages"),
+    ("fuel-type-data", "fueltype", "eia930_fuel_type_hourly_vintages"),
 ])
 def test_changed_versions_and_reversions(raw_database, dataset, source_key, table):
     loader, schema, dsn = raw_database
@@ -247,7 +247,7 @@ def test_eia_failure_rolls_back_earlier_versions(raw_database, failure):
                 )
     with psycopg.connect(dsn) as connection:
         assert connection.execute(sql.SQL("SELECT count(*) FROM {}").format(
-            sql.Identifier(schema, "eia930_region_data")
+            sql.Identifier(schema, "eia930_region_hourly_vintages")
         )).fetchone() == (0,)
 
     with httpx.Client(transport=httpx.MockTransport(lambda request: response([observation()]))) as http:
@@ -273,7 +273,7 @@ def test_ingestion_creates_missing_schema_and_table(raw_database, empty):
             ) == len(rows)
     with psycopg.connect(dsn) as connection:
         assert connection.execute(sql.SQL("SELECT count(*) FROM {}").format(
-            sql.Identifier(schema, "eia930_region_data")
+            sql.Identifier(schema, "eia930_region_hourly_vintages")
         )).fetchone() == (len(rows),)
 
 
@@ -325,7 +325,7 @@ def test_retry_rechecks_api_without_duplicating_versions(raw_database):
     with psycopg.connect(dsn) as connection:
         rows = connection.execute(sql.SQL(
             "SELECT value FROM {} ORDER BY observed_at"
-        ).format(sql.Identifier(schema, "eia930_region_data"))).fetchall()
+        ).format(sql.Identifier(schema, "eia930_region_hourly_vintages"))).fetchall()
     assert rows == [("123",), ("456",)]
 
 
@@ -348,5 +348,5 @@ def test_concurrent_unchanged_polls_store_one_version(raw_database):
     assert sorted(counts) == [0, 1]
     with psycopg.connect(dsn) as connection:
         assert connection.execute(sql.SQL("SELECT count(*) FROM {}").format(
-            sql.Identifier(schema, "eia930_region_data")
+            sql.Identifier(schema, "eia930_region_hourly_vintages")
         )).fetchone() == (1,)
