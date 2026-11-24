@@ -11,8 +11,9 @@ Requires Docker Compose. Run commands from the project directory.
 cp .env.example .env
 ```
 
-Set `POSTGRES_PASSWORD`, `AIRFLOW_ADMIN_PASSWORD`, a random `AIRFLOW_JWT_SECRET`,
-and `EIA_API_KEY` ([register here](https://www.eia.gov/opendata/register.php)).
+Set `POSTGRES_PASSWORD`, a separate random `VIEWER_PASSWORD`,
+`AIRFLOW_ADMIN_PASSWORD`, a random `AIRFLOW_JWT_SECRET`, and `EIA_API_KEY`
+([register here](https://www.eia.gov/opendata/register.php)).
 
 ```sh
 docker compose up -d --build --wait
@@ -20,9 +21,10 @@ docker compose up -d --build --wait
 
 - **Airflow:** <http://localhost:8000>; use the admin credentials in `.env`.
 - **Postgres:** `127.0.0.1:5000`, database `warehouse`; credentials are in `.env`.
+- **Data explorer:** <http://localhost:8050>; read-only Bronze, Silver, and Gold tables and views.
 - Enable `eia930_ingestion` to poll every 15 minutes. Progress and errors appear in task logs.
 
-Ports and schemas are configured in `.env`. 
+Ports and schemas are configured in `.env`.
 Changing `.env` does not update existing database or Airflow account passwords.
 
 After successful ingestion, you can also run dbt manually:
@@ -47,6 +49,7 @@ contents and `airflow_logs` persists task logs. Containers use `postgres:5432`.
 | `src/data_platform/ingestor.py` | Atomic Postgres loads and changed-only vintage history |
 | `compose.yaml` / `Dockerfile.airflow` | Shared infrastructure and separate Airflow/dbt Python environments |
 | `docker/airflow_init.py` / `dbt/profiles.yml` | Airflow initialization and dbt warehouse connection |
+| `src/data_platform/dashboard/` / `Dockerfile.dashboard` | Reusable, read-only data explorer and viewer provisioning |
 
 ### EIA-930 pipeline
 
@@ -164,6 +167,13 @@ Install [uv](https://docs.astral.sh/uv/) and sync the local environment:
 ```sh
 uv sync --locked --extra dev --python 3.12
 uv run --locked pytest -m 'not integration'
+```
+
+Include dashboard dependencies to run its API and security tests:
+
+```sh
+uv sync --locked --extra dev --extra dashboard --group dbt
+uv run --locked --extra dev --extra dashboard pytest -m 'not integration'
 ```
 
 Python, DAG, and dbt files are mounted into containers. Rebuild after changing

@@ -11,12 +11,16 @@ dependencies = ["httpx==0.28.1", "psycopg[binary]>=3.2,<4", "python-dotenv>=1,<2
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
+dashboard = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "psycopg-pool>=3.2,<4"]
 
 [dependency-groups]
 dbt = ["dbt-core==1.12.7", "dbt-postgres==1.11.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"data_platform.dashboard" = ["static/*", "static/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

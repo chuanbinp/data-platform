@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Explore the electricity warehouse. Public, read-only tables and vintage history."
+    />
+    <title>Data Platform · Explorer</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/static/vendor/tabulator.min.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <script defer src="/static/vendor/tabulator.min.js"></script>
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Data Platform home"
+        ><span class="brand-mark">▥</span
+        ><span>Data Platform<small>DATA WAREHOUSE</small></span></a
+      >
+      <label class="search-label" for="relation-search">Find a relation</label>
+      <input
+        id="relation-search"
+        type="search"
+        placeholder="Search tables and views…"
+        autocomplete="off"
+      />
+      <nav id="relations" aria-label="Warehouse relations">
+        <p class="nav-message">Discovering relations…</p>
+      </nav>
+      <footer class="sidebar-footer">
+        <div id="relation-summary" class="sidebar-count">
+          Discovering relations…
+        </div>
+        <div class="access-info">
+          <span class="lock-icon" aria-hidden="true">▣</span>
+          <div>Read-only access</div>
+        </div>
+      </footer>
+      <div
+        id="sidebar-resizer"
+        role="separator"
+        tabindex="0"
+        aria-label="Resize sidebar"
+        aria-orientation="vertical"
+        aria-valuemin="220"
+        aria-valuemax="480"
+        aria-valuenow="280"
+        title="Drag to resize. Use arrow keys, or double-click to reset."
+      ></div>
+    </aside>
+
+    <main>
+      <section class="data-panel" aria-labelledby="relation-title">
+        <header class="relation-heading">
+          <div class="relation-info">
+            <div class="relation-path">
+              <span
+                id="schema-marker"
+                class="schema-dot"
+                aria-hidden="true"
+                hidden
+              ></span>
+              <span id="schema-label">warehouse</span>
+              <span id="kind-label" class="kind-label">RELATION</span>
+            </div>
+            <h1 id="relation-title">Select a table or view</h1>
+          </div>
+          <div class="refresh-controls">
+            <span
+              id="refresh-status"
+              role="timer"
+              aria-live="off"
+              aria-label="Automatic refresh countdown"
+              >Refresh in 60s</span
+            >
+            <button id="pause" type="button" aria-pressed="false">
+              Pause updates</button
+            ><button id="refresh" class="primary" type="button">
+              ↻ &nbsp; Refresh
+            </button>
+          </div>
+        </header>
+        <div class="table-toolbar">
+          <div class="table-meta">
+            <span id="column-count">0 columns</span
+            ><span class="divider">·</span><span>100 rows per page</span
+            ><span class="divider">·</span><span>Times in UTC</span>
+            <span class="divider">·</span
+            ><span id="sort-summary">Default sort</span>
+          </div>
+          <div class="table-actions">
+            <button id="clear-sort" type="button" class="text-button" disabled>
+              Reset sort
+            </button>
+            <button
+              id="clear-filters"
+              type="button"
+              class="text-button"
+              disabled
+            >
+              Reset filters
+            </button>
+            <details id="column-menu">
+              <summary>▥ &nbsp; Columns</summary>
+              <div id="column-options"></div>
+            </details>
+          </div>
+        </div>
+        <div id="notice" class="notice" role="status" aria-live="polite">
+          Choose a relation in the sidebar to start exploring.
+        </div>
+        <div class="grid-area">
+          <div id="grid" aria-label="Read-only data table"></div>
+        </div>
+        <footer class="table-footer">
+          <div>
+            <span id="result-summary">No relation selected</span
+            ><small
+              id="last-refreshed"
+              title="Browser fetch time, not source observation time."
+              >Waiting for first refresh</small
+            >
+          </div>
+          <div class="pagination">
+            <button id="previous" type="button" disabled>Previous</button
+            ><span id="page-label">Page 1</span
+            ><button id="next" type="button" disabled>Next</button>
+          </div>
+        </footer>
+      </section>
+    </main>
+    <div
+      id="filter-popup"
+      popover="auto"
+      role="dialog"
+      aria-labelledby="filter-title"
+    >
+      <header>
+        <strong id="filter-title">Filter values</strong
+        ><button id="close-filter" type="button" aria-label="Close filter">
+          Close
+        </button>
+      </header>
+      <label class="value-search"
+        >Search available values<input
+          id="value-search"
+          type="search"
+          maxlength="500"
+          placeholder="Search values…"
+          autocomplete="off"
+          autofocus
+      /></label>
+      <label class="value-option all-values"
+        ><input id="all-values" type="checkbox" checked />All values</label
+      >
+      <div id="value-options" aria-label="Available values"></div>
+      <p id="value-summary" role="status" aria-live="polite">
+        All values included
+      </p>
+    </div>
+  </body>
+</html>
