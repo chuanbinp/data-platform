@@ -105,7 +105,7 @@ def test_cli_ingests_correct_dataset(monkeypatch, capsys, dataset, source_key, t
     assert f"bronze.{table}" in capsys.readouterr().out
 
 
-def test_cli_reports_database_failure_without_credentials(monkeypatch, capsys):
+def test_cli_reports_database_failure_without_credentials(monkeypatch, caplog):
     class FailingIngestor:
         def ingest(self, records, **options):
             raise psycopg.OperationalError("password=secret")
@@ -115,7 +115,7 @@ def test_cli_reports_database_failure_without_credentials(monkeypatch, capsys):
     assert eia930.main([
         "--dataset", "region-data", "--start", START.isoformat(), "--end", END.isoformat(),
     ]) == 1
-    error = capsys.readouterr().err
+    error = caplog.text
     assert "OperationalError" in error
     assert "secret" not in error
 

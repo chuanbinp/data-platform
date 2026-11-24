@@ -1,6 +1,7 @@
 """Run with unittest inside the Airflow image, or pytest when Airflow is installed."""
 
 import importlib.util
+import subprocess
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,14 +35,29 @@ class TestEIA930Dag(unittest.TestCase):
             self.assertEqual(count, 3)
             return client.ingest.call_args.kwargs
 
-    def test_python_operators_can_run_in_parallel(self):
+    def test_independent_bronze_silver_gold_branches(self):
+        from airflow.providers.standard.operators.bash import BashOperator
         from airflow.providers.standard.operators.python import PythonOperator
 
-        self.assertEqual(set(self.dag.task_ids), {"ingest_region_data", "ingest_fuel_type_data"})
-        self.assertTrue(all(isinstance(task, PythonOperator) for task in self.dag.tasks))
-        for task in self.dag.tasks:
-            self.assertEqual(task.upstream_task_ids, set())
-            self.assertEqual(task.downstream_task_ids, set())
+        self.assertEqual(len(self.dag.tasks), 6)
+        for name in ("region_data", "fuel_type_data"):
+            bronze = self.dag.get_task(f"bronze_{name}")
+            silver = self.dag.get_task(f"silver_{name}")
+            gold = self.dag.get_task(f"gold_{name}")
+            self.assertIsInstance(bronze, PythonOperator)
+            self.assertEqual(bronze.upstream_task_ids, set())
+            self.assertEqual(bronze.downstream_task_ids, {silver.task_id})
+            self.assertEqual(silver.upstream_task_ids, {bronze.task_id})
+            self.assertEqual(silver.downstream_task_ids, {gold.task_id})
+            self.assertEqual(gold.upstream_task_ids, {silver.task_id})
+            self.assertEqual(gold.downstream_task_ids, set())
+            for task in (silver, gold):
+                self.assertIsInstance(task, BashOperator)
+                self.assertEqual(task.trigger_rule, "all_success")
+                self.assertIn("{{ task.task_id }}", task.env["DBT_TARGET_PATH"])
+            self.assertIn(f"--select +stg_eia930_{name}", silver.bash_command)
+            self.assertNotIn(f"--select +stg_eia930_{name}+", silver.bash_command)
+            self.assertIn(f"--select stg_eia930_{name}+ --exclude stg_eia930_{name}", gold.bash_command)
         self.assertFalse(self.dag.catchup)
         self.assertEqual(self.dag.max_active_runs, 1)
 
@@ -51,6 +67,17 @@ class TestEIA930Dag(unittest.TestCase):
         self.assertEqual(first["start"], datetime(2026, 11, 20, 15, tzinfo=timezone.utc))
         self.assertEqual(first["end"], datetime(2026, 11, 25, 15, tzinfo=timezone.utc))
         self.assertIsNone(first["respondents"])
+
+    def test_build_completion_is_logged_only_on_success(self):
+        for name in ("region_data", "fuel_type_data"):
+            for layer in ("silver", "gold"):
+                task = self.dag.get_task(f"{layer}_{name}")
+                for command, expected_code in (("true", 0), ("false", 1)):
+                    script = task.bash_command.replace("/opt/data-platform/.venv/bin/dbt", command)
+                    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected_code)
+                    self.assertIn("Starting dbt build:", result.stdout)
+                    self.assertEqual("Completed dbt build:" in result.stdout, expected_code == 0)
 
     def test_manual_window_and_stable_run_id(self):
         kwargs = self.call_task("2026-11-01T00:00:00Z", "2026-11-02T00:00:00Z", ["NYIS"])

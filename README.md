@@ -1,6 +1,6 @@
 # Data Platform
 
-A reusable Python ingestion platform with Airflow, Docker, and Postgres.
+A reusable Python ingestion platform with Airflow, dbt, Docker, and Postgres.
 EIA-930 electricity data is the first source.
 
 ## Setup
@@ -11,106 +11,176 @@ Requires Docker Compose. Run commands from the project directory.
 cp .env.example .env
 ```
 
-Set the platform credentials: `POSTGRES_PASSWORD`, `AIRFLOW_ADMIN_PASSWORD`,
-and a random `AIRFLOW_JWT_SECRET`. For EIA-930, also set `EIA_API_KEY`
-([register here](https://www.eia.gov/opendata/register.php)).
+Set `POSTGRES_PASSWORD`, `AIRFLOW_ADMIN_PASSWORD`, a random `AIRFLOW_JWT_SECRET`,
+and `EIA_API_KEY` ([register here](https://www.eia.gov/opendata/register.php)).
 
 ```sh
 docker compose up -d --build --wait
 ```
 
-- **Airflow:** <http://localhost:8000>; log in with the admin credentials in `.env`.
+- **Airflow:** <http://localhost:8000>; use the admin credentials in `.env`.
 - **Postgres:** `127.0.0.1:5000`, database `warehouse`; credentials are in `.env`.
-- Enable `eia930_ingestion` in Airflow to poll every 15 minutes. View progress in task logs.
+- Enable `eia930_ingestion` to poll every 15 minutes. Progress and errors appear in task logs.
 
-Ports come from `.env`. Initial database credentials and the Airflow account are
-created once; editing `.env` does not update existing passwords.
+Ports and schemas are configured in `.env`. 
+Changing `.env` does not update existing database or Airflow account passwords.
+
+After successful ingestion, you can also run dbt manually:
+
+```sh
+docker compose run --rm dbt debug
+docker compose run --rm dbt build
+```
+
+The dbt service reuses the Airflow image and exits after each command.
+One Postgres container hosts both databases (analytics data + airflow metadata); `warehouse_pgdata` persists their
+contents and `airflow_logs` persists task logs. Containers use `postgres:5432`.
+`docker compose down` preserves volumes.
 
 ## Architecture
 
 ### Reusable platform
 
-| Component | Responsibility |
+| Component | Purpose |
 | --- | --- |
-| `src/data_platform/downloader.py` | HTTP retries, exponential backoff, and jitter for any API |
-| `src/data_platform/ingestor.py` | Atomic Postgres loads and changed-only vintage history for any source |
-| `compose.yaml` | Shared Postgres and Airflow services with persistent volumes |
-| `Dockerfile.airflow` | Installs the Python package and dependencies for tasks |
-| `docker/airflow_init.py` | Creates and initializes Airflow's metadata database |
+| `src/data_platform/downloader.py` | HTTP retries, exponential backoff, and jitter |
+| `src/data_platform/ingestor.py` | Atomic Postgres loads and changed-only vintage history |
+| `compose.yaml` / `Dockerfile.airflow` | Shared infrastructure and separate Airflow/dbt Python environments |
+| `docker/airflow_init.py` / `dbt/profiles.yml` | Airflow initialization and dbt warehouse connection |
 
-One Postgres container hosts the `warehouse` and `airflow` databases. Both persist
-in `warehouse_pgdata` named volume; task logs use `airflow_logs`. Containers connect to `postgres:5432`.
-Each vintage retains `observed_at`, `inserted_at`, and `ingestion_run_id`.
-A → B → A keeps all three versions; unchanged polls add no rows.
+### EIA-930 pipeline
 
-### EIA-930-specific pipeline
+**Legend:** blue = shared platform, green = pipeline-specific code/data,
+gray = external source. 
 
-| Component | Responsibility |
-| --- | --- |
-| `src/data_platform/sources/eia930.py` | API pagination, field mapping, Bronze table definitions, and CLI |
-| `dags/eia930_ingestion.py` | Dataset selection, polling schedule, and ingestion window |
+**Task orchestration:** two independent chains, scheduled every 15 minutes.
+
+```mermaid
+flowchart TB
+    subgraph runtime["Shared platform · Airflow scheduling and dbt execution"]
+        direction TB
+        subgraph region["EIA-930 · Region pipeline"]
+            direction LR
+            rb["bronze_region_data<br/>Python: download and ingest"]
+            rs["silver_region_data<br/>dbt: source tests and staging"]
+            rg["gold_region_data<br/>dbt: history, latest mart, and tests"]
+            rb --> rs --> rg
+        end
+        subgraph fuel["EIA-930 · Fuel pipeline"]
+            direction LR
+            fb["bronze_fuel_type_data<br/>Python: download and ingest"]
+            fs["silver_fuel_type_data<br/>dbt: source tests and staging"]
+            fg["gold_fuel_type_data<br/>dbt: history, latest mart, and tests"]
+            fb --> fs --> fg
+        end
+    end
+    classDef default fill:#eaf6e9,stroke:#2e6b35,color:#193a1d
+    style runtime stroke:#1e4e8c
+    style region stroke:#2e6b35
+    style fuel stroke:#2e6b35
+```
+
+**Data flow:** shared Python components load source-specific tables; dbt builds
+the downstream views through model references.
 
 ```mermaid
 flowchart TD
-    subgraph dag["Airflow DAG · every 15 minutes"]
-        region[ingest_region_data]
-        fuel[ingest_fuel_type_data]
-    end
+    api["External · EIA API"]
+    download["Shared · Downloader<br/>Retries, backoff, and jitter"]
+    client["EIA-930 · EIA930Client<br/>Pagination and field mapping"]
+    ingest["Shared · PostgresIngestor<br/>Atomic loads; append changed vintages"]
+    api --> download --> client --> ingest
 
-    subgraph platform["Reusable platform"]
-        downloader["Downloader · retries and backoff"]
-        ingestor["PostgresIngestor · changed-only vintages"]
+    subgraph bronze["Bronze · source tables"]
+        region_raw["eia930_region_data"]
+        fuel_raw["eia930_fuel_type_data"]
     end
+    ingest -->|region records| region_raw
+    ingest -->|fuel records| fuel_raw
 
-    api[EIA API] -->|HTTP responses| downloader
-    downloader --> client["EIA930Client · pagination and field mapping"]
-    region -.->|calls| client
-    fuel -.->|calls| client
-    client -->|source records| ingestor
-
-    subgraph bronze["Postgres · warehouse database · bronze schema"]
-        region_table[eia930_region_data]
-        fuel_table[eia930_fuel_type_data]
+    subgraph silver["Silver · typed views; all vintages retained"]
+        region_typed["electricity_region_hourly_vintages<br/>UTC periods and numeric values"]
+        fuel_typed["electricity_fuel_hourly_vintages<br/>UTC periods and numeric values"]
     end
-    ingestor --> region_table
-    ingestor --> fuel_table
+    region_raw --> region_typed
+    fuel_raw --> fuel_typed
+
+    subgraph gold["Gold · analytics views"]
+        region_history["electricity_metrics_history<br/>Per-metric knowledge intervals"]
+        region_latest["electricity_hourly_latest<br/>One row per hour and respondent"]
+        fuel_history["generation_by_fuel_history<br/>Per-fuel knowledge intervals"]
+        fuel_latest["generation_by_fuel_hourly_latest<br/>One row per hour and respondent; fuel columns"]
+        region_history -->|current versions; pivot metrics| region_latest
+        fuel_history -->|current versions; pivot fuels| fuel_latest
+    end
+    region_typed --> region_history
+    fuel_typed --> fuel_history
+
+    classDef default fill:#eaf6e9,stroke:#2e6b35,color:#193a1d
+    classDef shared fill:#e8f1ff,stroke:#1e4e8c,color:#12385c
+    classDef external fill:#f1f3f5,stroke:#59636e,color:#24292f
+    class download,ingest shared
+    class api external
 ```
 
-Solid arrows show data flow; dotted arrows show function calls. Both ingestion
-tasks can run in parallel, with one active DAG run at a time.
-Each task loads its corresponding Bronze table in one transaction. To add another
-source, provide its client, table definition, and DAG using the shared platform.
+- **Bronze:** download each dataset and append changed versions in one transaction.
+- **Silver:** validate the source and build typed staging views from `dbt/models/staging/eia930/`.
+- **Gold:** build the dataset's history and dashboard views from `dbt/models/marts/`.
 
-Planned next: dbt staging views in `silver`, followed by marts in `gold` and a dashboard.
+There is one active DAG run at a time. Each downstream task requires its own
+upstream task to succeed. Gold does not rebuild Silver.
+
+Unchanged polls add no rows; A → B → A retains all three versions. History keeps
+`observed_at`, `inserted_at`, and `ingestion_run_id`. Silver and Gold are views,
+so committed source changes are visible immediately; dbt builds validate data
+and update view definitions.
+
+### Gold marts
+
+| View in `gold` | Grain |
+| --- | --- |
+| `electricity_metrics_history` | Hour × respondent × metric × version |
+| `electricity_hourly_latest` | Hour × respondent; demand, forecast, generation, and interchange columns |
+| `generation_by_fuel_history` | Hour × respondent × fuel × version |
+| `generation_by_fuel_hourly_latest` | Hour × respondent; generation and unit columns per fuel |
+
+Use a point-in-time query to retrieve the versions observed as of a UTC cutoff:
+
+```sql
+SELECT period, respondent, metric, value, value_units
+FROM gold.electricity_metrics_history
+WHERE known_from <= TIMESTAMPTZ '2026-11-24 00:00:00+00'
+  AND (known_until > TIMESTAMPTZ '2026-11-24 00:00:00+00'
+       OR known_until IS NULL);
+```
+
+The cutoff uses collection time, not EIA publication time. Latest marts pivot
+current versions, keeping missing values as NULL; detailed provenance stays in history.
 
 ## Development setup and tests
 
-Install [uv](https://docs.astral.sh/uv/) and sync the Python environment:
+Install [uv](https://docs.astral.sh/uv/) and sync the local environment:
 
 ```sh
 uv sync --locked --extra dev --python 3.12
+uv run --locked pytest -m 'not integration'
 ```
 
-Python source and DAGs are mounted into Airflow, so edits are picked up without
-rebuilding. Rebuild the image after changing dependencies or `Dockerfile.airflow`.
+Python, DAG, and dbt files are mounted into containers. Rebuild after changing
+dependencies or the Dockerfile. Generated dbt artifacts stay under `/tmp/dbt`
+in containers; local `dbt/target/` and `dbt/logs/` are Git-ignored and safe to delete.
 
-**Offline tests:** no API key or database required. Database and Airflow tests
-are skipped when their prerequisites are unavailable.
-
-```sh
-uv run --locked pytest
-```
-
-**Database tests:** start Postgres and replace the example password with your
-configured password. Tests create and remove isolated schemas.
+**Database and dbt fixture tests:** use your configured credentials. Tests create
+and remove isolated schemas, covering rollback, vintages, as-of queries, pivots,
+validation failures, and separate Silver/Gold builds.
 
 ```sh
 docker compose up -d --wait postgres
 TEST_DATABASE_URL='postgresql://admin:YOUR_PASSWORD@127.0.0.1:5000/warehouse' \
-  uv run --locked pytest -m integration
+  uv run --locked --extra dev --group dbt pytest -m integration
 ```
 
-**Airflow DAG tests:** run inside the built Airflow image.
+**Airflow DAG tests:** run inside the built image.
 
 ```sh
 docker compose run --rm --no-deps \
@@ -119,6 +189,3 @@ docker compose run --rm --no-deps \
   airflow-scheduler python -m unittest discover \
   -s /opt/data-platform/tests -p test_airflow_dag.py
 ```
-
-Tests cover HTTP retries, API pagination, field mapping, atomic rollback,
-changed-only vintages, point-in-time queries, and DAG parameters.

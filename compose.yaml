@@ -1,11 +1,23 @@
+# Warehouse settings shared by Airflow tasks and manual dbt runs.
+x-warehouse-environment: &warehouse-environment
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+  POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+  DBT_ENV_SECRET_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+  DBT_BRONZE_SCHEMA: ${DBT_BRONZE_SCHEMA:-bronze}
+  DBT_SILVER_SCHEMA: ${DBT_SILVER_SCHEMA:-silver}
+  DBT_GOLD_SCHEMA: ${DBT_GOLD_SCHEMA:-gold}
+
 x-airflow-common: &airflow-common
-  build:
+  build: &airflow-build
     context: .
     dockerfile: Dockerfile.airflow
-  image: data-platform-airflow:3.4.0
+  image: &airflow-image data-platform-airflow:3.4.0
   restart: unless-stopped
   env_file: .env
   environment: &airflow-environment
+    <<: *warehouse-environment
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://postgres:5432/airflow
@@ -15,14 +27,13 @@ x-airflow-common: &airflow-common
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-change-me-local-airflow-jwt-secret-use-a-random-long-value-before-deployment}
     AIRFLOW__API_AUTH__JWT_ISSUER: airflow
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
-    POSTGRES_HOST: postgres
-    POSTGRES_PORT: "5432"
     # libpq reads credentials separately, so passwords need no URL escaping.
     PGUSER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
     PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
   volumes:
     - ./dags:/opt/airflow/dags:ro
     - ./src:/opt/data-platform/src:ro
+    - ./dbt:/opt/dbt:ro
     - airflow_logs:/opt/airflow/logs
   depends_on: &airflow-dependencies
     postgres:
@@ -31,6 +42,22 @@ x-airflow-common: &airflow-common
       condition: service_completed_successfully
 
 services:
+  dbt:
+    build: *airflow-build
+    image: *airflow-image
+    profiles: ["dbt"]
+    entrypoint: /opt/data-platform/.venv/bin/dbt
+    command: build
+    environment:
+      <<: *warehouse-environment
+      DBT_TARGET_PATH: /tmp/dbt/target
+      DBT_LOG_PATH: /tmp/dbt/logs
+    volumes:
+      - ./dbt:/opt/dbt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     image: postgres:17
     restart: unless-stopped
@@ -68,7 +95,7 @@ services:
     <<: *airflow-common
     command: api-server
     ports:
-      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+      - "127.0.0.1:${AIRFLOW_PORT:-8000}:8080"
     healthcheck: &airflow-healthcheck
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
       interval: 15s

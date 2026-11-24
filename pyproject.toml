@@ -12,6 +12,9 @@ dependencies = ["httpx==0.28.1", "psycopg[binary]>=3.2,<4", "python-dotenv>=1,<2
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
 
+[dependency-groups]
+dbt = ["dbt-core==1.12.7", "dbt-postgres==1.11.0"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

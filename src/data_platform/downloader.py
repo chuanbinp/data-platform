@@ -60,6 +60,9 @@ class Downloader:
     ) -> None:
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be finite and greater than zero")
+        # Transport logs can include API keys in URLs and authentication headers.
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
         self.retry_policy = retry_policy or RetryPolicy()
         self.timeout = timeout
         self._owns_client = client is None

@@ -25,7 +25,7 @@ def test_success_preserves_params_headers_and_timeout():
 
 
 def test_backoff_jitter_and_cap(caplog):
-    caplog.set_level("DEBUG", logger="data_platform.downloader")
+    caplog.set_level("DEBUG")
     calls = []
     ceilings = []
     sleeps = []
@@ -47,12 +47,14 @@ def test_backoff_jitter_and_cap(caplog):
             uniform=uniform,
         )
         assert downloader.get(
-            "https://example.test/data?api_key=top-secret"
+            "https://example.test/data?api_key=top-secret",
+            headers={"Authorization": "Bearer header-secret"},
         ).status_code == 200
 
     assert ceilings == [1, 2, 3, 3]
     assert sleeps == [0.5, 1, 1.5, 1.5]
     assert "top-secret" not in caplog.text
+    assert "header-secret" not in caplog.text
     assert "example.test" not in caplog.text
 
 

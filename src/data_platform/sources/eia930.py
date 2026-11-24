@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -197,9 +196,17 @@ class EIA930Client:
                 raise EIA930Error(f"{dataset}: request failed or returned invalid data") from None
 
             if expected_total is not None and total != expected_total:
+                logger.error(
+                    "EIA-930 total changed: dataset=%s offset=%d expected=%d actual=%d",
+                    dataset, offset, expected_total, total,
+                )
                 raise EIA930Error("Total changed during pagination; rerun the window")
             expected_total = total
             if offset + len(rows) > total or (not rows and offset < total):
+                logger.error(
+                    "EIA-930 pagination incomplete: dataset=%s offset=%d rows=%d total=%d",
+                    dataset, offset, len(rows), total,
+                )
                 raise EIA930Error("Incomplete or inconsistent pagination")
             logger.info(
                 "Fetched EIA-930 page: dataset=%s start=%s end=%s (inclusive) "
@@ -262,18 +269,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.ingestion_run_id = args.ingestion_run_id or str(uuid4())
     load_dotenv(".env", override=False)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     try:
         with EIA930Client() as client:
             count = client.ingest(**vars(args))
     except (ValueError, KeyError, EIA930Error) as error:
-        print(f"Ingestion failed: {error}", file=sys.stderr)
+        logger.error("Ingestion failed: %s", error)
         return 1
     except psycopg.Error as error:
-        print(
-            f"Database load failed ({type(error).__name__}); check connection and tables",
-            file=sys.stderr,
+        logger.error(
+            "Database load failed (%s); check connection and tables", type(error).__name__,
         )
         return 1
 

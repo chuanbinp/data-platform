@@ -93,8 +93,9 @@ class PostgresIngestor:
                         count += cursor.rowcount
         except Exception as error:
             logger.error(
-                "Load failed; no changes committed: table=%s run_id=%s error_type=%s",
-                destination.as_string(), ingestion_run_id, type(error).__name__,
+                "Load failed: table=%s run_id=%s processed=%d elapsed=%.2fs error_type=%s",
+                destination.as_string(), ingestion_run_id, processed,
+                monotonic() - started, type(error).__name__,
             )
             raise
         logger.info(

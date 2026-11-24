@@ -43,6 +43,19 @@ def test_empty_input_detects_connection_failure(monkeypatch):
         PostgresIngestor().ingest([], table="records", key_columns=["id"], ingestion_run_id="run")
 
 
+def test_commit_failure_does_not_log_success(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="data_platform.ingestor")
+    connection = MagicMock()
+    connection.__enter__.return_value = connection
+    connection.__exit__.side_effect = psycopg.OperationalError("password=secret-test-key")
+    monkeypatch.setattr(psycopg, "connect", lambda **kwargs: connection)
+    with pytest.raises(psycopg.OperationalError):
+        PostgresIngestor().ingest([], table="records", key_columns=["id"], ingestion_run_id="run")
+    assert "Load failed:" in caplog.text
+    assert "Load committed:" not in caplog.text
+    assert "secret-test-key" not in caplog.text
+
+
 def test_environment_configuration(monkeypatch):
     for name, value in {
         "HOST": "postgres", "PORT": "5432", "DB": "warehouse",
@@ -152,7 +165,8 @@ class TestPostgresIngestor:
                 key_columns=["id"], ingestion_run_id="run",
             )
         assert stored_rows(database) == []
-        assert "no changes committed" in caplog.text
+        assert "Load failed:" in caplog.text
+        assert "processed=1" in caplog.text
         assert "Load committed:" not in caplog.text
         assert "secret-test-key" not in caplog.text
 

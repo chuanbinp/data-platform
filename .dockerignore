@@ -9,3 +9,5 @@
 build
 dist
 data
+dbt/target
+dbt/logs

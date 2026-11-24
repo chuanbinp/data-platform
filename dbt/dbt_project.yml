@@ -1,0 +1,32 @@
+name: data_platform
+version: "0.1.0"
+config-version: 2
+profile: data_platform
+
+vars:
+  fuel_columns:
+    BAT: battery
+    COL: coal
+    GEO: geothermal
+    NG: natural_gas
+    NUC: nuclear
+    OES: other_energy_storage
+    OIL: petroleum
+    OTH: other
+    PS: pumped_storage
+    SNB: solar_with_battery
+    SUN: solar
+    UES: unknown_energy_storage
+    UNK: unknown
+    WAT: hydro
+    WNB: wind_with_battery
+    WND: wind
+
+models:
+  data_platform:
+    +materialized: view
+    marts:
+      +schema: "{{ env_var('DBT_GOLD_SCHEMA', 'gold') }}"
+
+flags:
+  send_anonymous_usage_stats: false

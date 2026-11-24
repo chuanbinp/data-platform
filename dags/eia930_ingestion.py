@@ -1,12 +1,10 @@
-"""Poll EIA-930 and retain changed Bronze observations."""
+"""Ingest EIA-930 vintages and build each dataset's Silver and Gold models."""
 
-import logging
 from datetime import datetime, timedelta, timezone
 
+from airflow.providers.standard.operators.bash import BashOperator
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG, Param
-
-logger = logging.getLogger(__name__)
 
 
 def ingest_eia930(dataset, params, dag_run, run_id):
@@ -22,11 +20,6 @@ def ingest_eia930(dataset, params, dag_run, run_id):
         anchor = anchor.replace(minute=0, second=0, microsecond=0)
         start, end = anchor - timedelta(hours=72), anchor + timedelta(hours=48)
 
-    # HTTPX's INFO messages include EIA's query-string API key.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logger.info(
-        "Ingesting %s: start=%s (inclusive), end=%s (exclusive)", dataset, start, end,
-    )
     with EIA930Client() as client:
         return client.ingest(
             dataset,
@@ -35,6 +28,27 @@ def ingest_eia930(dataset, params, dag_run, run_id):
             respondents=params["respondents"] or None,
             ingestion_run_id=f"{dag_run.dag_id}/{run_id}",
         )
+
+
+def dbt_build(task_id, select, exclude=None):
+    command = f"/opt/data-platform/.venv/bin/dbt --no-use-colors build --select {select}"
+    if exclude:
+        command += f" --exclude {exclude}"
+    return BashOperator(
+        task_id=task_id,
+        bash_command=f"""
+            set -e
+            echo "Starting dbt build: {task_id}"
+            {command}
+            echo "Completed dbt build: {task_id}"
+        """,
+        env={
+            "DBT_TARGET_PATH": "/tmp/dbt/{{ task.task_id }}/target",
+            "DBT_LOG_PATH": "/tmp/dbt/{{ task.task_id }}/logs",
+        },
+        append_env=True,
+        do_xcom_push=False,
+    )
 
 
 with DAG(
@@ -52,24 +66,25 @@ with DAG(
         "start": Param(
             None, type=["null", "string"], format="date-time",
             title="Start time (inclusive)",
-            description="Use a whole UTC hour, e.g. 2026-11-01T00:00:00Z. Leave both dates empty for the rolling window.",
+            description="Whole UTC hour. Leave both dates empty for the rolling window.",
         ),
         "end": Param(
             None, type=["null", "string"], format="date-time",
             title="End time (exclusive)",
-            description="Use a whole UTC hour, e.g. 2026-11-02T00:00:00Z. Provide both dates or leave both empty.",
+            description="Whole UTC hour, later than start. This hour is excluded.",
         ),
         "respondents": Param([], type="array", items={"type": "string"}),
     },
-    tags=["eia930", "bronze"],
+    tags=["eia930", "bronze", "silver", "gold"],
 ) as eia930_dag:
-    PythonOperator(
-        task_id="ingest_region_data",
-        python_callable=ingest_eia930,
-        op_kwargs={"dataset": "region-data"},
-    )
-    PythonOperator(
-        task_id="ingest_fuel_type_data",
-        python_callable=ingest_eia930,
-        op_kwargs={"dataset": "fuel-type-data"},
-    )
+    for dataset in ("region-data", "fuel-type-data"):
+        name = dataset.replace("-", "_")
+        model = f"stg_eia930_{name}"
+        bronze = PythonOperator(
+            task_id=f"bronze_{name}",
+            python_callable=ingest_eia930,
+            op_kwargs={"dataset": dataset},
+        )
+        silver = dbt_build(f"silver_{name}", select=f"+{model}")
+        gold = dbt_build(f"gold_{name}", select=f"{model}+", exclude=model)
+        bronze >> silver >> gold
