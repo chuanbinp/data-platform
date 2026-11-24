@@ -1,0 +1,10 @@
+FROM apache/airflow:3.4.0-python3.12
+
+COPY --chown=airflow:root pyproject.toml /opt/data-platform/pyproject.toml
+COPY --chown=airflow:root src /opt/data-platform/src
+COPY --chown=airflow:root docker/airflow_init.py /opt/airflow/airflow_init.py
+
+# Keep Airflow at the base image version when resolving project dependencies.
+RUN pip install --no-cache-dir \
+    --constraint https://raw.githubusercontent.com/apache/airflow/constraints-3.4.0/constraints-3.12.txt \
+    "apache-airflow==3.4.0" -e /opt/data-platform
