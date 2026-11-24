@@ -25,8 +25,12 @@ class PostgresIngestor:
             "host": os.getenv("POSTGRES_HOST", "127.0.0.1"),
             "port": os.getenv("POSTGRES_PORT", "5000"),
             "dbname": os.getenv("POSTGRES_DB", "warehouse"),
-            "user": os.getenv("POSTGRES_USER", "admin"),
-            "password": os.getenv("POSTGRES_PASSWORD"),
+            "user": os.getenv(
+                "WAREHOUSE_USER", os.getenv("POSTGRES_USER", "warehouse_writer")
+            ),
+            "password": os.getenv(
+                "WAREHOUSE_PASSWORD", os.getenv("POSTGRES_PASSWORD")
+            ),
         }
 
     def ingest(

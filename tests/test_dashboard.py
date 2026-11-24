@@ -152,6 +152,7 @@ def test_api_rejects_identifiers_injection_and_writes(explorer):
         {"direction": "desc; select 1"},
         {"page_size": 101},
         {"page": 0},
+        {"page": 102, "page_size": 100},
     ):
         assert client.get(base, params=params).status_code == 422
     injection = "' OR 1=1; DROP TABLE readings; --"

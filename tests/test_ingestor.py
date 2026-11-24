@@ -57,6 +57,8 @@ def test_commit_failure_does_not_log_success(monkeypatch, caplog):
 
 
 def test_environment_configuration(monkeypatch):
+    monkeypatch.delenv('WAREHOUSE_USER', raising=False)
+    monkeypatch.delenv('WAREHOUSE_PASSWORD', raising=False)
     for name, value in {
         "HOST": "postgres", "PORT": "5432", "DB": "warehouse",
         "USER": "loader", "PASSWORD": "test-password",
@@ -67,6 +69,16 @@ def test_environment_configuration(monkeypatch):
         "user": "loader", "password": "test-password",
     }
     assert PostgresIngestor("dbname=another")._connection_options == {"conninfo": "dbname=another"}
+
+
+def test_local_ingestion_prefers_runtime_credentials(monkeypatch):
+    monkeypatch.setenv('POSTGRES_USER', 'administrator')
+    monkeypatch.setenv('POSTGRES_PASSWORD', 'admin-example')
+    monkeypatch.setenv('WAREHOUSE_USER', 'warehouse_writer')
+    monkeypatch.setenv('WAREHOUSE_PASSWORD', 'writer-example')
+    options = PostgresIngestor()._connection_options
+    assert options['user'] == 'warehouse_writer'
+    assert options['password'] == 'writer-example'
 
 
 @pytest.fixture

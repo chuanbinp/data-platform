@@ -11,13 +11,14 @@ from data_platform.dashboard import schemas
 logger = logging.getLogger(__name__)
 
 
-def provision(connection, user, password, allowed_schemas):
+def provision(connection, user, password, allowed_schemas, owner=None):
     if not user or not password:
         raise ValueError("Set a nonempty VIEWER_USER and VIEWER_PASSWORD")
-    owner, database = connection.execute(
+    current_user, database = connection.execute(
         "SELECT current_user, current_database()"
     ).fetchone()
-    if user == owner:
+    owner = owner or current_user
+    if user in {owner, current_user}:
         raise ValueError("Viewer must differ from the pipeline/database owner")
     role = sql.Identifier(user)
     existing = connection.execute(
@@ -115,6 +116,7 @@ def main():
                 os.environ["VIEWER_USER"],
                 os.environ["VIEWER_PASSWORD"],
                 schemas(),
+                owner=os.getenv("WAREHOUSE_USER"),
             )
     except Exception as error:
         logger.error("Viewer provisioning failed: error_type=%s", type(error).__name__)

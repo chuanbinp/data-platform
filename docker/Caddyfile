@@ -1,0 +1,31 @@
+{
+	admin off
+	persist_config off
+	http_port 8080
+	https_port 8443
+	servers {
+		protocols h1 h2
+		max_header_size 64KB
+		timeouts {
+			read_header 10s
+			read_body 10s
+			write 15s
+		}
+	}
+}
+
+{$DASHBOARD_ADDRESS:http://:8080} {
+	request_body {
+		max_size 1024
+	}
+	reverse_proxy dashboard:8080 {
+		transport http {
+			response_header_timeout 15s
+		}
+	}
+}
+
+# Internal health check works before a public HTTPS certificate is available.
+http://:8081 {
+	reverse_proxy /api/health dashboard:8080
+}

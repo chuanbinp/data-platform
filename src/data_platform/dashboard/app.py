@@ -18,6 +18,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout, TooManyRequests
 
 from data_platform.dashboard import schemas
+from data_platform.dashboard.security import ApiLimits
 
 logger = logging.getLogger(__name__)
 STATIC = Path(__file__).with_name("static")
@@ -84,6 +85,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+app.add_middleware(ApiLimits)
 
 
 @app.middleware("http")
@@ -292,6 +294,8 @@ def rows(
     match_column: list[str] = Query(default=[], max_length=500),
     match_value: list[str] = Query(default=[], max_length=500),
 ):
+    if (page - 1) * page_size > 10_000:
+        raise HTTPException(422, "Pagination limit reached. Narrow your filters to see more records.")
     with app.state.pool.connection() as connection:
         metadata = relation(connection, schema, table)
         names = {column["name"] for column in metadata}

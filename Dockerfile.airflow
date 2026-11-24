@@ -1,17 +1,33 @@
-FROM apache/airflow:3.4.0-python3.12
+FROM apache/airflow:slim-3.4.0-python3.12@sha256:2d3e42b9de0eca948b9a869817068fedcb8a8eac9827b1e6215de3329d59335f
+
+USER root
+# Apply security updates to the pinned base; scan the final image, not just Python imports.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    # apt consolidates DHI's status fragments; remove the obsolete duplicate inventory.
+    && rm -rf /var/lib/dpkg/status.d /var/lib/dpkg/status-old \
+    && rm -rf /var/lib/apt/lists/*
+USER airflow
 
 COPY --chown=airflow:root pyproject.toml uv.lock /opt/data-platform/
+COPY --chown=airflow:root docker/airflow.lock /opt/data-platform/airflow.lock
+
+# Install only required providers, with a hashed dependency lock.
+RUN pip install --no-cache-dir --require-hashes -r /opt/data-platform/airflow.lock \
+    && pip install --no-cache-dir uv==0.13.9 \
+    && uv sync --locked --only-group dbt --no-install-project --project /opt/data-platform
+
 COPY --chown=airflow:root src /opt/data-platform/src
 COPY --chown=airflow:root docker/airflow_init.py /opt/airflow/airflow_init.py
+RUN pip install --no-cache-dir --no-deps -e /opt/data-platform \
+    && pip check \
+    && pip uninstall -y pip
 
-# Keep Airflow at the base image version when resolving project dependencies.
-RUN pip install --no-cache-dir \
-    --constraint https://raw.githubusercontent.com/apache/airflow/constraints-3.4.0/constraints-3.12.txt \
-    "apache-airflow==3.4.0" -e /opt/data-platform
-
-# Keep dbt dependencies separate from Airflow's Python environment.
-RUN pip install --no-cache-dir uv==0.13.9 \
-    && uv sync --locked --only-group dbt --no-install-project --project /opt/data-platform
+# Dependencies are baked in; neither installer (and its bundled libraries) is needed at runtime.
+USER root
+RUN apt-get purge -y python3-pip openssh-client \
+    && rm -rf /tmp/.cache /var/lib/dpkg/status-old /var/lib/apt/lists/*
+USER airflow
 
 ENV DBT_PROJECT_DIR=/opt/dbt
 ENV DBT_PROFILES_DIR=/opt/dbt

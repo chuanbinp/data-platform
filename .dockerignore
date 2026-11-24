@@ -9,5 +9,6 @@
 build
 dist
 data
+backups
 dbt/target
 dbt/logs
