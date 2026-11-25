@@ -18,7 +18,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout, TooManyRequests
 
 from data_platform.dashboard import schemas
-from data_platform.dashboard.security import ApiLimits
+from data_platform.dashboard.security import ApiLimits, RequestBounds
 
 logger = logging.getLogger(__name__)
 STATIC = Path(__file__).with_name("static")
@@ -86,6 +86,7 @@ app = FastAPI(
     openapi_url=None,
 )
 app.add_middleware(ApiLimits)
+app.add_middleware(RequestBounds)
 
 
 @app.middleware("http")

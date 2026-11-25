@@ -163,103 +163,91 @@ current versions, keeping missing values as NULL; detailed provenance stays in h
 
 ## Tech stack and Docker services
 
-| Technology | Service / runtime | Role |
-| --- | --- | --- |
-| Python, HTTPX, psycopg | Airflow Python tasks | Download EIA data with retries and ingest changed vintages |
-| Airflow | `airflow-api-server`, `airflow-scheduler`, `airflow-dag-processor` | Serve the UI/execution API, schedule tasks, and parse DAG definitions |
-| dbt | Airflow tasks or the optional `dbt` container | Build and test Silver/Gold views using SQL model references |
-| PostgreSQL 17 | `postgres` | Host the `warehouse` database and a separate `airflow` metadata database |
-| FastAPI, Tabulator | `dashboard` | Serve the read-only API and browser table explorer; the browser polls every 60 seconds |
-| Caddy | `dashboard-proxy` | Forward browser requests; manage HTTPS certificates when a domain is configured |
-| Docker Compose | All services | Build images, connect networks, order startup, and manage persistent volumes |
+| Technology | Role |
+| --- | --- |
+| Python, HTTPX, psycopg | Reusable API downloads and changed-only vintage ingestion |
+| Airflow LocalExecutor | Scheduling, Python tasks, and dbt subprocesses |
+| dbt | Tested Silver and Gold views |
+| PostgreSQL 17 | Warehouse and separate Airflow metadata database |
+| FastAPI + Tabulator | Read-only data explorer; refreshes every 60 seconds |
+| Cloudflare Tunnel | Production HTTPS access without a public VM IP |
+| Docker Compose | Services, networks, initialization, and persistent storage |
 
 ### How services connect
 
 ```mermaid
 flowchart LR
     browser["Browser"]
+    cloudflare["Cloudflare HTTPS"]
     eia["EIA API"]
-
     subgraph docker["Docker Compose host"]
-        caddy["dashboard-proxy · Caddy"]
+        tunnel["cloudflared · production only"]
         dashboard["dashboard · FastAPI + Tabulator"]
-        airflow["Airflow<br/>API server · scheduler · DAG processor"]
-        tasks["LocalExecutor tasks<br/>Python ingestion · dbt"]
-        subgraph postgres["postgres · one container · port 5432"]
-            warehouse["warehouse database<br/>Bronze · Silver · Gold"]
-            metadata["airflow database<br/>DAG/task state · UI accounts"]
+        airflow["Airflow API · scheduler · DAG processor"]
+        tasks["LocalExecutor · Python + dbt"]
+        subgraph postgres["Postgres · port 5432"]
+            warehouse["warehouse · Bronze / Silver / Gold"]
+            metadata["airflow · metadata"]
         end
     end
-
-    browser -->|"localhost:8080 · HTTP"| caddy
-    caddy -->|"proxy network · HTTP 8080"| dashboard
-    dashboard -->|"warehouse network · read-only SQL"| warehouse
-    browser -->|"localhost:8000 · Airflow UI"| airflow
-    airflow -->|"pipeline network · metadata SQL"| metadata
-    airflow -->|"scheduler starts local task processes"| tasks
-    eia -->|"HTTPS responses"| tasks
-    tasks -->|"pipeline network · ingestion and dbt SQL"| warehouse
-
+    browser -->|"production HTTPS"| cloudflare
+    cloudflare -->|"outbound encrypted tunnel"| tunnel
+    tunnel -->|"internal HTTP 8080"| dashboard
+    browser -->|"local HTTP · localhost:8080"| dashboard
+    browser -->|"local / IAP tunnel · localhost:8000"| airflow
+    airflow --> metadata
+    airflow --> tasks
+    tasks -->|"HTTPS"| eia
+    tasks -->|"writer"| warehouse
+    dashboard -->|"read-only"| warehouse
     classDef service fill:#e8f1ff,stroke:#1e4e8c,color:#12385c
     classDef database fill:#eaf6e9,stroke:#2e6b35,color:#193a1d
-    class caddy,dashboard,airflow,tasks service
+    class tunnel,dashboard,airflow,tasks service
     class warehouse,metadata database
     style docker fill:#111e2e,stroke:#1e4e8c,color:#e4ebf4
     style postgres fill:#1b2b3c,stroke:#2e6b35,color:#e4ebf4
 ```
 
-Airflow's **LocalExecutor** runs tasks under the scheduler; no separate worker
-service is needed. dbt runs as a subprocess in those tasks, using its own Python
-environment inside the Airflow image. The optional `dbt` service reuses that
-image for manual commands and exits when finished. Browsers access data through
-FastAPI; database credentials stay on the server.
+No separate Airflow worker is needed. The optional `dbt` container reuses the
+Airflow image for manual commands and exits afterward. Credentials stay on the server.
 
 ### Networks and ports
 
-| Docker network | Members | Access |
+| Network | Members | Purpose |
 | --- | --- | --- |
-| `explorer` | Caddy | Gateway network for published ports and outbound certificate requests |
-| `proxy` | Caddy, dashboard | Internal HTTP connection; only Caddy's address is trusted for forwarded client IPs |
-| `warehouse` | Dashboard, Postgres | Internal database connection for the read-only viewer |
-| `pipeline` | Airflow, dbt, database initialization, Postgres | Database access and outbound EIA requests |
+| `explorer` | Dashboard locally; cloudflared in production | Local port publication or outbound tunnel connection |
+| `tunnel` | cloudflared, dashboard (production only) | Internal HTTP; only the connector may supply visitor IPs |
+| `warehouse` | Dashboard, Postgres | Internal read-only database connection |
+| `pipeline` | Airflow, dbt, database initialization, Postgres | Warehouse writes, metadata, and outbound EIA calls |
 
-The dashboard has no internet route and shares no network with Airflow. Caddy
-has no direct connection to Postgres. Containers use service names such as
-`dashboard:8080` and `postgres:5432`, rather than host-published ports.
+Production dashboard containers have no internet route and share no network with
+Airflow. The connector has no direct database connection. Containers use service
+names such as `dashboard:8080` and `postgres:5432`.
 
-| Host endpoint (defaults) | Container endpoint | Purpose |
+| Host endpoint | Local | Production |
 | --- | --- | --- |
-| `127.0.0.1:8080` | Caddy `8080` | Local HTTP dashboard |
-| `127.0.0.1:8443` | Caddy `8443` | HTTPS when configured; local HTTP mode has no TLS listener |
-| `127.0.0.1:8000` | Airflow API server `8080` | Airflow UI/API |
-| `127.0.0.1:5000` | Postgres `5432` | Local database clients |
-
-The dashboard's own port `8080` and Caddy's health port `8081` are internal only.
-`.env` controls host mappings. Public HTTPS uses host ports 80/443 as described
-in [HTTPS with Caddy](#https-with-caddy).
+| `127.0.0.1:8080` | Dashboard | Unpublished; use the Cloudflare hostname |
+| `127.0.0.1:8000` | Airflow | Airflow through an IAP SSH tunnel |
+| `127.0.0.1:5000` | Postgres | Postgres through an IAP SSH tunnel |
 
 ### Images, startup, and storage
 
-`Dockerfile.airflow`, `Dockerfile.dashboard`, and `Dockerfile.caddy` build the
-application images; Postgres uses a pinned official image. Airflow mounts
-`src/`, `dags/`, and `dbt/` read-only for development. Dashboard code/assets are
-built into its image, while Caddy's configuration is mounted read-only.
-Compose reads `.env` and passes each service only its configured variables;
-the file is not baked into images.
+Two custom images contain Airflow/dbt and the dashboard. Postgres and cloudflared
+use pinned official images. Local development mounts `src/`, `dags/`, and `dbt/`;
+production uses files baked into images. Compose passes only the configured
+variables to each service; `.env` is never baked into an image.
 
-Postgres becomes healthy before `database-init` prepares accounts, ownership,
-and viewer grants. The dashboard then starts, followed by Caddy. Separately,
-`airflow-init` prepares metadata and the UI account before Airflow services start.
-Both initialization services exit after completion.
+Postgres starts first. `database-init` prepares accounts and viewer grants;
+`airflow-init` prepares Airflow metadata and the UI account. Both initializers exit.
+The dashboard, Airflow services, and production tunnel then start.
 
 | Named volume | Container path | Persists |
 | --- | --- | --- |
-| `warehouse_pgdata` | `/var/lib/postgresql/data` | Both Postgres databases |
-| `airflow_logs` | `/opt/airflow/logs` | Airflow task logs |
-| `caddy_data` | `/data` | Certificates, private keys, and certificate account state |
+| `warehouse_pgdata` | `/var/lib/postgresql/data` | Warehouse and Airflow databases |
+| `airflow_logs` | `/opt/airflow/logs` | Task logs |
 
-Named volumes live in Docker-managed storage, not repository folders. They
-survive container recreation and `docker compose down`; `down -v` deletes them.
+Volumes survive container recreation and `docker compose down`; `down -v` deletes
+them. Existing certificate volumes from earlier setups are left untouched.
 
 ## Development setup and tests
 
@@ -310,11 +298,13 @@ A single `database-init` step prepares runtime accounts, schema ownership, and
 viewer grants. Postgres has separate administrator, warehouse writer, Airflow,
 and read-only viewer accounts. Airflow and dashboard containers do not receive
 database administrator credentials.
-The dashboard cannot directly reach Airflow and has no internet access. By default,
-all published ports bind to localhost. Keep `.env` private (`chmod 600 .env`).
-Caddy (`dashboard-proxy`) serves localhost:8080 while the dashboard stays on
-internal networks. Only Caddy is trusted to forward client IPs.
-
+In production, the dashboard cannot directly reach Airflow and has no internet
+access. All published ports bind to localhost. Keep `.env` private (`chmod 600 .env`).
+Locally, FastAPI serves `localhost:8080` directly. In production, Cloudflare Tunnel
+provides HTTPS without publishing the dashboard port. Only the connector's fixed
+Docker address may supply Cloudflare visitor headers; arbitrary forwarded headers
+are ignored. The application accepts request bodies up to 1 KiB with a 10-second
+body timeout.
 The API permits 120 requests/minute/IP with a burst of 30, 16 KiB query strings,
 and offsets up to 10,000 rows. Narrow filters to browse beyond that limit.
 Bronze/Silver/Gold are public schemas in the explorer, including future tables.
@@ -324,22 +314,12 @@ Use `docker compose build --no-cache` to refresh OS updates. Airflow dependencie
 are pinned with hashes in `docker/airflow.lock`; update that lock from
 `docker/airflow.in` with `uv pip compile` when applying Python security updates.
 
-## HTTPS with Caddy
+## Deployment
 
-Local access stays HTTP by default. On a server with a public domain, set:
+GitHub Actions tests pushes to `master`, builds two images, and deploys through
+GCP IAP. Cloudflare Tunnel exposes only the read-only dashboard. The VM keeps its
+private IP; Airflow and Postgres remain localhost-only.
 
-```dotenv
-DASHBOARD_ADDRESS=data.example.com
-DASHBOARD_BIND_IP=0.0.0.0
-DASHBOARD_PORT=80
-DASHBOARD_HTTPS_PORT=443
-```
-
-Point the domain's DNS to the server and allow inbound TCP 80/443, then run
-`docker compose up -d --build --wait dashboard-proxy`. Caddy redirects HTTP to
-HTTPS and obtains/renews certificates automatically. Certificates and account
-keys persist in the private `caddy_data` volume; do not delete it during updates.
-Airflow and Postgres remain localhost-only. No Certbot or renewal cron job is needed.
-
-`Dockerfile.caddy` builds the pinned Caddy release with a patched network library
-until the official image includes that security fix.
+See [GCP and Cloudflare setup](docs/deployment.md) for one-time configuration,
+required GitHub variables, deployment checks, and rollback. The 2 GB VM uses
+one Airflow task and one dbt thread at a time; swap provides limited headroom.

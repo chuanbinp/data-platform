@@ -12,3 +12,6 @@ data/
 dbt/target/
 dbt/logs/
 backups/
+gha-creds-*.json
+images.env
+release.tar.gz

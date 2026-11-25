@@ -9,4 +9,4 @@ data_platform:
       user: "{{ env_var('POSTGRES_USER') }}"
       password: "{{ env_var('DBT_ENV_SECRET_POSTGRES_PASSWORD') }}"
       schema: "{{ env_var('DBT_SILVER_SCHEMA', 'silver') }}"
-      threads: 2
+      threads: "{{ env_var('DBT_THREADS', '2') | int }}"
