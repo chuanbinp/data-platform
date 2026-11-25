@@ -20,6 +20,7 @@
         ><span class="brand-mark">▥</span
         ><span>Data Platform<small>DATA WAREHOUSE</small></span></a
       >
+      <button id="mobile-tables" type="button" aria-expanded="false" aria-controls="relation-search relations">Tables</button>
       <label class="search-label" for="relation-search">Find a relation</label>
       <input
         id="relation-search"
@@ -81,19 +82,20 @@
                 aria-label="Automatic refresh countdown"
                 >Refresh in 60s</span
               >
-              <button id="pause" type="button" aria-pressed="false">
-                Pause updates</button
-              ><button id="refresh" class="primary" type="button">
-                ↻ &nbsp; Refresh
+              <button id="pause" type="button" aria-pressed="false" aria-label="Pause updates" title="Pause updates">
+                <span class="button-icon" aria-hidden="true">⏸</span>
+                <span class="button-label">Pause updates</span>
+              </button>
+              <button id="refresh" class="primary" type="button" aria-label="Refresh" title="Refresh">
+                <span class="button-icon" aria-hidden="true">↻</span>
+                <span class="button-label">Refresh</span>
               </button>
             </div>
           </div>
         </header>
         <div class="table-toolbar">
           <div class="table-meta">
-            <span id="column-count">0 columns</span
-            ><span class="divider">·</span><span>100 rows per page</span
-            ><span class="divider">·</span><span>Times in UTC</span>
+            <span id="column-count">0 columns</span>
             <span class="divider">·</span
             ><span id="sort-summary">Default sort</span>
           </div>
