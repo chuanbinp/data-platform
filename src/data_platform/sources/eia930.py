@@ -15,7 +15,7 @@ import psycopg
 from dotenv import load_dotenv
 from psycopg import sql
 
-from data_platform.downloader import Downloader, QueryParams
+from data_platform.downloader import Downloader, QueryParams, RetryPolicy
 from data_platform.ingestor import PostgresIngestor
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,10 @@ class EIA930Client:
             raise ValueError("page_size must be an integer between 1 and 5000")
         self.page_size = page_size
         self._owns_downloader = downloader is None
-        self._downloader = downloader if downloader is not None else Downloader()
+        self._downloader = downloader if downloader is not None else Downloader(
+            timeout=60.0,
+            retry_policy=RetryPolicy(base_delay=5.0, max_delay=60.0),
+        )
 
     def iter_records(
         self,
@@ -190,8 +193,8 @@ class EIA930Client:
             except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as error:
                 # Raw HTTP errors and API responses can contain the API key.
                 logger.error(
-                    "EIA-930 page failed: dataset=%s offset=%d error_type=%s",
-                    dataset, offset, type(error).__name__,
+                    "EIA-930 page failed: dataset=%s start=%s end=%s offset=%d error_type=%s",
+                    dataset, params["start"], params["end"], offset, type(error).__name__,
                 )
                 raise EIA930Error(f"{dataset}: request failed or returned invalid data") from None
 
