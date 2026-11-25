@@ -119,6 +119,26 @@ def test_short_page_does_not_terminate_early():
     assert calls == [0, 1]
 
 
+def test_pagination_restarts_for_each_daily_window():
+    calls = []
+    records = [row(metric="D"), row(metric="DF"), row(period="2026-11-02T00")]
+
+    def handler(request):
+        params = request.url.params
+        offset = int(params["offset"])
+        calls.append((params["start"], offset))
+        window = records[:2] if params["start"] == "2026-11-01T00" else records[2:]
+        return httpx.Response(200, json=page(window[offset:offset + 1], len(window)))
+
+    with api(handler, page_size=1) as client:
+        assert list(client.iter_records(
+            "region-data", start=START, end=START + timedelta(hours=25),
+        )) == records
+    assert calls == [
+        ("2026-11-01T00", 0), ("2026-11-01T00", 1), ("2026-11-02T00", 0),
+    ]
+
+
 @pytest.mark.parametrize("failure", ["empty", "changed_total"])
 def test_inconsistent_pagination_fails(failure):
     def handler(request):
