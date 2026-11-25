@@ -7,8 +7,8 @@ example=${1:?Usage: sudo bash setup-vm.sh /path/to/.env.example}
 [[ -f "$example" ]]
 # shellcheck source=/dev/null
 source /etc/os-release
-[[ "$ID" == ubuntu && "$VERSION_ID" == 24.04 && $(dpkg --print-architecture) == amd64 ]] || {
-    echo "This setup targets Ubuntu 24.04 x86." >&2
+[[ "$ID" == ubuntu && ( "$VERSION_ID" == 24.04 || "$VERSION_ID" == 26.04 ) && $(dpkg --print-architecture) == amd64 ]] || {
+    echo "This setup supports Ubuntu 24.04 or 26.04 on x86." >&2
     exit 1
 }
 
@@ -18,7 +18,7 @@ apt-get install -y ca-certificates curl gnupg
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
-echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable' \
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" \
     > /etc/apt/sources.list.d/docker.list
 
 if ! command -v gcloud > /dev/null; then

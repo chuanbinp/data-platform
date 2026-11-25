@@ -1,6 +1,7 @@
 # Deploy to GCP
 
-Target: `hpml-cp3541` → `data-platform` → `us-east1-c`, Ubuntu 24.04 x86.
+Target: `hpml-cp3541` → `data-platform` → `us-east1-c`, Ubuntu 26.04 x86.
+The VM setup also supports Ubuntu 24.04.
 The VM needs outbound internet access; no external IP or inbound web ports.
 
 ```text
