@@ -629,6 +629,12 @@ $("next").addEventListener("click", () => {
   state.revision++;
   loadPage();
 });
+function updateUtcClock() {
+  const now = new Date().toISOString();
+  const clock = $("utc-time");
+  clock.dateTime = now;
+  clock.textContent = now.replace("T", " ").slice(0, 19);
+}
 function updateRefreshStatus() {
   let status;
   if (state.paused) status = "Updates paused";
@@ -668,13 +674,16 @@ async function refresh() {
 }
 $("refresh").addEventListener("click", refresh);
 setInterval(() => {
+  updateUtcClock();
   updateRefreshStatus();
   if (!state.paused && !document.hidden && Date.now() >= nextRefreshAt)
     refresh();
 }, 1000);
 document.addEventListener("visibilitychange", () => {
+  updateUtcClock();
   updateRefreshStatus();
   if (!document.hidden && !state.paused) refresh();
 });
+updateUtcClock();
 updateRefreshStatus();
 gridReady.then(discover).catch((error) => notice(error.message, true));
