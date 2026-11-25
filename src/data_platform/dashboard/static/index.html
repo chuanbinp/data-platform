@@ -68,19 +68,25 @@
             </div>
             <h1 id="relation-title">Select a table or view</h1>
           </div>
-          <div class="refresh-controls">
-            <span
-              id="refresh-status"
-              role="timer"
-              aria-live="off"
-              aria-label="Automatic refresh countdown"
-              >Refresh in 60s</span
-            >
-            <button id="pause" type="button" aria-pressed="false">
-              Pause updates</button
-            ><button id="refresh" class="primary" type="button">
-              ↻ &nbsp; Refresh
-            </button>
+          <div class="relation-controls">
+            <div class="utc-clock" role="timer" aria-live="off" aria-label="Current UTC time">
+              <span class="utc-label">UTC</span>
+              <time id="utc-time"></time>
+            </div>
+            <div class="refresh-controls">
+              <span
+                id="refresh-status"
+                role="timer"
+                aria-live="off"
+                aria-label="Automatic refresh countdown"
+                >Refresh in 60s</span
+              >
+              <button id="pause" type="button" aria-pressed="false">
+                Pause updates</button
+              ><button id="refresh" class="primary" type="button">
+                ↻ &nbsp; Refresh
+              </button>
+            </div>
           </div>
         </header>
         <div class="table-toolbar">

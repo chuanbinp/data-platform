@@ -309,6 +309,38 @@ main {
   border-radius: 4px;
   color: #8a97a7;
 }
+.relation-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.utc-clock {
+  display: inline-flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  font-size: 0.8125rem;
+  color: var(--ink);
+}
+.utc-label {
+  display: flex;
+  align-items: center;
+  padding: 0.45rem 0.6rem;
+  background: #e9f5f2;
+  color: var(--accent);
+  border-right: 1px solid var(--line);
+  font-weight: 600;
+}
+#utc-time {
+  padding: 0.45rem 0.65rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .refresh-controls {
   display: flex;
   align-items: center;
@@ -681,6 +713,7 @@ summary::-webkit-details-marker {
     align-items: flex-start;
     flex-direction: column;
   }
+  .relation-controls,
   .refresh-controls {
     width: 100%;
   }
