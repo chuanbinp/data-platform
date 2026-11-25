@@ -1,0 +1,78 @@
+# Compose 2.24.4+ supports !override. Local development uses compose.yaml alone.
+x-airflow-production: &airflow-production
+  build: !reset null
+  volumes: !override
+    - airflow_logs:/opt/airflow/logs
+  environment:
+    AIRFLOW__CORE__PARALLELISM: "1"
+    DBT_THREADS: "1"
+
+services:
+  postgres:
+    volumes:
+      - /opt/data-platform/postgres-entrypoint.sh:/usr/local/bin/platform-postgres-entrypoint.sh:ro
+
+  database-init:
+    build: !reset null
+
+  dashboard:
+    build: !reset null
+    ports: !reset []
+    environment:
+      TRUSTED_TUNNEL_IP: 172.30.10.2
+    networks: !override
+      tunnel:
+        ipv4_address: 172.30.10.3
+      warehouse:
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.11.2@sha256:55c7e3e8d89d5e8d20b75a82f3602cbf98e06db406e73e282073cfdc5a9a3af6
+    command: >-
+      tunnel --no-autoupdate --metrics 0.0.0.0:2000
+      run --token-file /run/secrets/tunnel_token
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      tunnel:
+        ipv4_address: 172.30.10.2
+      explorer:
+    secrets: [tunnel_token]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    depends_on:
+      dashboard:
+        condition: service_healthy
+
+  airflow-init:
+    <<: *airflow-production
+  airflow-api-server:
+    <<: *airflow-production
+  airflow-scheduler:
+    <<: *airflow-production
+  airflow-dag-processor:
+    <<: *airflow-production
+
+  dbt:
+    build: !reset null
+    volumes: !reset []
+    environment:
+      DBT_THREADS: "1"
+
+secrets:
+  tunnel_token:
+    file: ${TUNNEL_TOKEN_FILE:-/opt/data-platform/tunnel-token}
+
+networks:
+  tunnel:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24

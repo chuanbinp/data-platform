@@ -13,4 +13,4 @@ RUN pip install --no-cache-dir uv==0.13.9 \
 
 USER viewer
 EXPOSE 8080
-CMD ["uvicorn", "data_platform.dashboard.app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--limit-concurrency", "32", "--no-access-log"]
+CMD ["uvicorn", "data_platform.dashboard.app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--no-proxy-headers", "--limit-concurrency", "32", "--no-access-log"]

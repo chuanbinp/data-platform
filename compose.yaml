@@ -24,7 +24,7 @@ x-airflow-common: &airflow-common
   build: &airflow-build
     context: .
     dockerfile: Dockerfile.airflow
-  image: &airflow-image data-platform-airflow:3.4.0
+  image: &airflow-image ${AIRFLOW_IMAGE:-data-platform-airflow:3.4.0}
   restart: unless-stopped
   logging: *logging
   environment: &airflow-environment
@@ -34,7 +34,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://${AIRFLOW_DB_USER:-airflow_user}@postgres:5432/airflow
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__PARALLELISM: ${AIRFLOW_PARALLELISM:-2}
+    DBT_THREADS: ${DBT_THREADS:-2}
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?Set AIRFLOW_JWT_SECRET in .env}
     AIRFLOW__API_AUTH__JWT_ISSUER: airflow
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
@@ -65,7 +66,7 @@ services:
     build: &dashboard-build
       context: .
       dockerfile: Dockerfile.dashboard
-    image: &dashboard-image data-platform-dashboard:local
+    image: &dashboard-image ${DASHBOARD_IMAGE:-data-platform-dashboard:local}
     restart: "no"
     command: ["python", "-m", "data_platform.database"]
     environment:
@@ -90,11 +91,9 @@ services:
     logging: *logging
     environment:
       <<: *viewer-environment
-      FORWARDED_ALLOW_IPS: 172.30.10.2
-    networks:
-      proxy:
-        ipv4_address: 172.30.10.3
-      warehouse:
+    networks: [explorer, warehouse]
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8080}:8080"
     read_only: true
     tmpfs:
       - /tmp:size=16m,noexec,nosuid
@@ -119,45 +118,6 @@ services:
       retries: 3
       start_period: 15s
 
-  # Docker does not publish ports for internal-only networks. Only this fixed
-  # upstream relay gets a regular bridge; the application remains isolated.
-  dashboard-proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile.caddy
-    image: data-platform-caddy:2.11.9
-    restart: unless-stopped
-    logging: *logging
-    user: "10001:10001"
-    environment:
-      DASHBOARD_ADDRESS: ${DASHBOARD_ADDRESS:-http://:8080}
-    networks:
-      proxy:
-        ipv4_address: 172.30.10.2
-      explorer:
-    ports:
-      - "${DASHBOARD_BIND_IP:-127.0.0.1}:${DASHBOARD_PORT:-8080}:8080"
-      - "${DASHBOARD_BIND_IP:-127.0.0.1}:${DASHBOARD_HTTPS_PORT:-8443}:8443"
-    read_only: true
-    tmpfs: ["/tmp:size=16m,noexec,nosuid"]
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    mem_limit: 64m
-    cpus: 0.25
-    pids_limit: 32
-    depends_on:
-      dashboard:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-
   dbt:
     build: *airflow-build
     image: *airflow-image
@@ -166,6 +126,7 @@ services:
     command: build
     environment:
       <<: *warehouse-environment
+      DBT_THREADS: ${DBT_THREADS:-2}
       DBT_TARGET_PATH: /tmp/dbt/target
       DBT_LOG_PATH: /tmp/dbt/logs
     networks: [pipeline]
@@ -251,14 +212,8 @@ services:
 volumes:
   warehouse_pgdata:
   airflow_logs:
-  caddy_data:
 
 networks:
-  proxy:
-    internal: true
-    ipam:
-      config:
-        - subnet: 172.30.10.0/24
   explorer:
   warehouse:
     internal: true
