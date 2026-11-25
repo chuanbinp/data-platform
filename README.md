@@ -144,6 +144,9 @@ The dashboard, Airflow services, and production tunnel then start.
 Volumes survive container recreation and `docker compose down`; `down -v` deletes
 them.
 
+Production supports [daily backups and recovery](docs/backups.md), retaining the
+latest seven full backups in a private GCS bucket.
+
 </details>
 
 ## Local setup
@@ -306,6 +309,16 @@ flowchart LR
 Actions authenticates to GCP through Workload Identity Federation; application
 secrets remain on the VM. Deployments run one at a time and preserve database
 volumes and the DAG's paused state.
+
+For Postgres backups, CI/CD also:
+
+- Tests backup and restore in a disposable Postgres database.
+- Copies the backup and restore scripts to the VM.
+- Installs `jq` if missing and checks bucket access before changing services.
+- Installs and enables the daily backup timer after application health checks pass.
+
+Create the bucket and grant the VM access once using the GCP setup script. See the
+[backup guide](docs/backups.md) for setup and recovery commands.
 
 Service replacement causes brief downtime. Failed deployments retain backups and
 previous release files; rollback is manual. View progress and errors in the

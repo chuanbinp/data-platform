@@ -1,0 +1,16 @@
+[Unit]
+Description=Full Postgres backup to Google Cloud Storage
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/data-platform/current/docker/backup.sh
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/bin/bash /opt/data-platform/current/docker/backup.sh
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

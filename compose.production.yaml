@@ -80,6 +80,10 @@ secrets:
   tunnel_token:
     file: ${TUNNEL_TOKEN_FILE:-/opt/data-platform/tunnel-token}
 
+volumes:
+  warehouse_pgdata:
+    name: ${POSTGRES_VOLUME_NAME:-data-platform_warehouse_pgdata}
+
 networks:
   tunnel:
     internal: true

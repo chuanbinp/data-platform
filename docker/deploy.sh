@@ -13,6 +13,10 @@ release=$(cd "$(dirname "$0")/.." && pwd -P)
 # Both Actions and manual rollbacks use the same host-side lock.
 exec 9>"$root/deploy.lock"
 flock -w 1800 9
+if ! command -v jq > /dev/null; then
+    apt-get update
+    apt-get install -y jq
+fi
 # Keep Postgres's mount path stable across releases to avoid unnecessary restarts.
 entrypoint="$root/postgres-entrypoint.sh"
 if [[ ! -f "$entrypoint" ]]; then
@@ -23,28 +27,17 @@ cmp -s "$release/docker/postgres-entrypoint.sh" "$entrypoint" || {
     exit 1
 }
 
-compose() {
-    docker compose --project-name data-platform --project-directory "$release" \
-        --env-file "$root/.env" --env-file "$release/images.env" \
-        -f "$release/compose.yaml" -f "$release/compose.production.yaml" "$@"
-}
-
-postgres() {
-    # Credentials expand in the container, not on the host.
-    # shellcheck disable=SC2016
-    compose exec -T postgres sh -c '
-        export PGHOST=127.0.0.1 PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD"
-        exec "$@"
-    ' sh "$@"
-}
-
-sql() {
-    postgres psql -d "$1" -At -v ON_ERROR_STOP=1 -c "$2"
-}
+# shellcheck source=platform-common.sh
+source "$release/docker/platform-common.sh"
 
 url=$(cat "$root/dashboard-url")
 [[ "$url" =~ ^https://[a-zA-Z0-9.-]+$ ]] || { echo "Set dashboard-url to https://YOUR_HOSTNAME (no trailing slash)." >&2; exit 1; }
 compose config --quiet
+# Validate backup access before changing running services. The timer is enabled
+# only at the end, after application health checks pass.
+load_backup_bucket
+check_backup_bucket
+backup_objects > /dev/null
 
 paused_by_deploy=false
 on_exit() {
@@ -130,4 +123,8 @@ if [[ -n "$previous" && "$previous" != "$release" ]]; then
     ln -sfn "$previous" "$root/previous"
 fi
 ln -sfn "$release" "$root/current"
+install -m 644 "$release/docker/data-platform-backup.service" /etc/systemd/system/
+install -m 644 "$release/docker/data-platform-backup.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now data-platform-backup.timer
 echo "Deployed $(basename "$release"). Backup: $backup"

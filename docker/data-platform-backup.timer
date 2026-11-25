@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Postgres backup at 03:00 New York time
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 America/New_York
+Persistent=false
+Unit=data-platform-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -95,5 +95,13 @@ Rollback does not reverse database migrations. Private backups live under
 Postgres uses a stable startup script outside release directories. If a future
 release changes that script, deployment stops for a deliberate maintenance update.
 
+For daily backups, seven-run cloud retention, and restore commands, follow the
+[backup and recovery guide](backups.md). Deployment installs `jq` if needed, checks
+bucket access before changing services, and enables the timer after health checks.
+Run the updated GCP setup script before the first deployment of this feature.
+After recovery,
+manual Compose commands must use the shared production helper to load the volume
+override, as shown in that guide.
+
 The 2 GB VM runs one Airflow task and one dbt thread at a time. Check memory with
 `free -h` and `sudo docker stats --no-stream`; resize if it runs out of memory.
