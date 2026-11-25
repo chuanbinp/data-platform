@@ -1,8 +1,7 @@
 # Deploy to GCP
 
-Target: `hpml-cp3541` → `data-platform` → `us-east1-c`, Ubuntu 26.04 x86.
-The VM setup also supports Ubuntu 24.04.
 The VM needs outbound internet access; no external IP or inbound web ports.
+Replace `YOUR_PROJECT_ID` in the commands below with your GCP project ID.
 
 ```text
 Browser → Cloudflare HTTPS → cloudflared → dashboard
@@ -36,9 +35,9 @@ Run from the same repository in Cloud Shell:
 
 ```sh
 gcloud compute scp docker/setup-vm.sh .env.example data-platform: \
-  --project=hpml-cp3541 --zone=us-east1-c --tunnel-through-iap
+  --project=YOUR_PROJECT_ID --zone=us-east1-c --tunnel-through-iap
 gcloud compute ssh data-platform \
-  --project=hpml-cp3541 --zone=us-east1-c --tunnel-through-iap \
+  --project=YOUR_PROJECT_ID --zone=us-east1-c --tunnel-through-iap \
   --command='sudo bash setup-vm.sh .env.example'
 ```
 
@@ -80,7 +79,7 @@ Open your dashboard URL and confirm both pipeline branches complete in Airflow.
 For the Airflow UI, run this on your laptop, then open `http://localhost:8000`:
 
 ```sh
-gcloud compute ssh data-platform --project=hpml-cp3541 --zone=us-east1-c \
+gcloud compute ssh data-platform --project=YOUR_PROJECT_ID --zone=us-east1-c \
   --tunnel-through-iap -- -N -L 8000:127.0.0.1:8000
 ```
 
