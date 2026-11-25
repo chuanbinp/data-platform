@@ -1,8 +1,6 @@
 # Compose 2.24.4+ supports !override. Local development uses compose.yaml alone.
+# Keep merge tags on services: older Compose versions ignore them in YAML anchors.
 x-airflow-production: &airflow-production
-  build: !reset null
-  volumes: !override
-    - airflow_logs:/opt/airflow/logs
   environment:
     AIRFLOW__CORE__PARALLELISM: "1"
     DBT_THREADS: "1"
@@ -53,12 +51,24 @@ services:
 
   airflow-init:
     <<: *airflow-production
+    build: !reset null
+    volumes: !override
+      - airflow_logs:/opt/airflow/logs
   airflow-api-server:
     <<: *airflow-production
+    build: !reset null
+    volumes: !override
+      - airflow_logs:/opt/airflow/logs
   airflow-scheduler:
     <<: *airflow-production
+    build: !reset null
+    volumes: !override
+      - airflow_logs:/opt/airflow/logs
   airflow-dag-processor:
     <<: *airflow-production
+    build: !reset null
+    volumes: !override
+      - airflow_logs:/opt/airflow/logs
 
   dbt:
     build: !reset null

@@ -58,8 +58,8 @@ def test_production_isolation_and_baked_images(tmp_path):
     assert dashboard["environment"]["TRUSTED_TUNNEL_IP"] == connector_ip
     assert "@sha256:" in tunnel["image"]
     assert tunnel["secrets"] and not tunnel.get("environment", {}).get("TUNNEL_TOKEN")
-    for service in services.values():
-        assert not service.get("build")
+    for name, service in services.items():
+        assert not service.get("build"), f"{name} must use a prebuilt image"
         for port in service.get("ports", []):
             assert port["host_ip"] == "127.0.0.1"
     for name in (
