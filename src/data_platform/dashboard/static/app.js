@@ -30,6 +30,27 @@ const sidebarResizer = $("sidebar-resizer");
 const sidebar = document.querySelector(".sidebar");
 let sidebarDrag = null;
 
+function toggleMobileTables(open) {
+  sidebar.classList.toggle("mobile-open", open);
+  $("mobile-tables").setAttribute("aria-expanded", String(open));
+  $("mobile-tables").textContent = open ? "Close" : "Tables";
+  document.querySelector("main").inert = open && mobileLayout.matches;
+}
+const mobileLayout = window.matchMedia("(max-width: 760px)");
+mobileLayout.addEventListener("change", () => {
+  $("column-menu").open = false;
+  toggleMobileTables(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && sidebar.classList.contains("mobile-open")) {
+    toggleMobileTables(false);
+    $("mobile-tables").focus();
+  }
+});
+$("mobile-tables").addEventListener("click", () => {
+  toggleMobileTables(!sidebar.classList.contains("mobile-open"));
+});
+
 function sidebarMaxWidth() {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.floor(innerWidth * 0.4));
 }
@@ -399,6 +420,9 @@ function setColumns(columns) {
   grid.setColumns(
     columns.map((column) => ({
       field: column.name,
+      ...(mobileLayout.matches && (column.name === "period" || column.name.endsWith("_at"))
+        ? { minWidth: 220 }
+        : {}),
       title: column.name,
       titleFormatter: () => columnTitle(column),
       tooltip: false,
@@ -505,6 +529,11 @@ async function discover() {
 }
 
 function selectRelation(relation) {
+  if (window.matchMedia("(max-width: 760px)").matches) {
+    const browsing = sidebar.contains(document.activeElement);
+    toggleMobileTables(false);
+    if (browsing) $("mobile-tables").focus();
+  }
   state.selected = relation;
   state.page = 1;
   state.sort = null;
@@ -538,7 +567,8 @@ async function loadPage() {
   const revision = state.revision;
   const current = { ...state.selected };
   const base = relationPath(current);
-  $("refresh").textContent = "Refreshing…";
+  $("refresh").querySelector(".button-label").textContent = "Refreshing…";
+  $("refresh").setAttribute("aria-label", "Refreshing");
   $("previous").disabled = $("next").disabled = true;
   try {
     await gridReady;
@@ -594,7 +624,8 @@ async function loadPage() {
     }
   } finally {
     state.busy = false;
-    $("refresh").textContent = "↻  Refresh";
+    $("refresh").querySelector(".button-label").textContent = "Refresh";
+    $("refresh").setAttribute("aria-label", "Refresh");
     $("previous").disabled = state.page === 1;
     $("next").disabled = !state.hasMore;
     if (state.pending) {
@@ -652,7 +683,11 @@ function updateRefreshStatus() {
 }
 $("pause").addEventListener("click", () => {
   state.paused = !state.paused;
-  $("pause").textContent = state.paused ? "Resume updates" : "Pause updates";
+  const label = state.paused ? "Resume updates" : "Pause updates";
+  $("pause").querySelector(".button-label").textContent = label;
+  $("pause").querySelector(".button-icon").textContent = state.paused ? "▶" : "⏸";
+  $("pause").setAttribute("aria-label", label);
+  $("pause").title = label;
   $("pause").setAttribute("aria-pressed", String(state.paused));
   if (!state.paused) nextRefreshAt = Date.now() + REFRESH_INTERVAL;
   updateRefreshStatus();
