@@ -73,6 +73,8 @@ must be allowed. Only the dashboard is public; Airflow and Postgres stay private
 Push to `master`, or choose **Actions → Test and deploy → Run workflow** on `master`.
 Tests run first; Actions builds images and deploys them to the VM. Each deployment
 backs up the databases, waits for active tasks, and checks dashboard health.
+Before restarting services, deployment runs `dbt build` to build and test the
+warehouse views against existing data.
 The first deployment enables ingestion; later deployments preserve its paused state.
 
 Open your dashboard URL and confirm both pipeline branches complete in Airflow.

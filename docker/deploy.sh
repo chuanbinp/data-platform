@@ -86,6 +86,9 @@ echo "Preparing database accounts and Airflow metadata"
 compose up -d --no-deps --no-build --wait --wait-timeout 180 postgres
 compose run --rm --no-deps database-init
 compose run --rm --no-deps airflow-init
+echo "Building and validating warehouse views before restarting services"
+compose run --rm --no-deps dbt build
+compose run --rm --no-deps dbt run-operation retire_legacy_gold_views
 # The one-off runs above completed initialization; do not start them again via dependencies.
 compose up -d --no-deps --no-build --wait --wait-timeout 300 \
     dashboard airflow-api-server airflow-scheduler airflow-dag-processor cloudflared
