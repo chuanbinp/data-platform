@@ -3,7 +3,7 @@
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -14,6 +14,7 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
 from data_platform.ingestor import PostgresIngestor
+from data_platform.database import prepare_eia930_sources
 from data_platform.sources.eia930 import DATASETS, _vintage_table_sql
 
 PROJECT = Path(__file__).resolve().parents[1] / "dbt"
@@ -45,6 +46,8 @@ def warehouse(tmp_path):
 
     def run(command="build", select=None, exclude=None):
         args = [str(DBT), command, "--project-dir", str(PROJECT), "--profiles-dir", str(PROJECT)]
+        if command == "run-operation":
+            args += ["retire_legacy_gold_views"]
         if select:
             args += ["--select", select]
         if exclude:
@@ -108,18 +111,22 @@ def test_staging_preserves_vintages_and_types(warehouse):
         ]
         assert [row[2:] for row in rows] == original
     with psycopg.connect(dsn) as connection:
-        # A missing latest value must not fall back to an older non-null version.
-        assert connection.execute(sql.SQL("SELECT demand, demand_forecast FROM {}").format(
-            sql.Identifier(f"{target}_gold", "electricity_metrics_hourly_latest"),
-        )).fetchall() == [(None, None)]
-        assert connection.execute(sql.SQL("SELECT solar_generation, wind_generation, solar_units FROM {}").format(
-            sql.Identifier(f"{target}_gold", "generation_by_fuel_hourly_latest"),
-        )).fetchall() == [(None, None, "megawatthours")]
+        # Current NULLs remain NULL rather than falling back to an older value.
+        for view, value_column in (
+            ("electricity_demand_hourly_history", "value"),
+            ("generation_by_fuel_hourly_history", "generation"),
+        ):
+            assert connection.execute(sql.SQL("SELECT {} FROM {} WHERE known_until IS NULL").format(
+                sql.Identifier(value_column), sql.Identifier(f"{target}_gold", view),
+            )).fetchall() == [(None,)]
 
 
 @pytest.mark.parametrize("dataset,mart", [
-    ("region-data", "electricity_metrics_hourly_latest"),
-    ("fuel-type-data", "generation_by_fuel_hourly_latest"),
+    ("region-data", "electricity_demand_hourly_history"),
+    ("region-data", "electricity_demand_forecast_hourly_history"),
+    ("region-data", "electricity_net_generation_hourly_history"),
+    ("region-data", "electricity_total_interchange_hourly_history"),
+    ("fuel-type-data", "generation_by_fuel_hourly_history"),
 ])
 def test_silver_and_gold_build_separately(warehouse, dataset, mart):
     dsn, _, target, run = warehouse
@@ -153,7 +160,7 @@ def test_each_build_validates_only_its_source(warehouse, column, value, dataset)
     assert test_name in result.stdout
 
 
-def test_gold_as_of_history_and_latest_pivot(warehouse):
+def test_gold_as_of_history_and_metric_split(warehouse):
     dsn, source, target, run = warehouse
     gold = f"{target}_gold"
     with psycopg.connect(dsn) as connection:
@@ -190,7 +197,7 @@ def test_gold_as_of_history_and_latest_pivot(warehouse):
     expected = Decimal("10.1234567890123456789")
     with psycopg.connect(dsn) as connection:
         for history, category, value_column in (
-            ("electricity_metrics_hourly_history", "metric = 'D'", "value"),
+            ("electricity_demand_hourly_history", "true", "value"),
             ("generation_by_fuel_hourly_history", "fueltype = 'SUN'", "generation"),
         ):
             relation = sql.Identifier(gold, history)
@@ -214,19 +221,21 @@ def test_gold_as_of_history_and_latest_pivot(warehouse):
                 """).format(sql.Identifier(value_column), relation, sql.SQL(category)), (cutoff, cutoff)).fetchall()
                 assert rows == ([] if value is None else [(value,)])
 
+        for metric, expected_rows in (
+            ("demand", [(expected, "megawatthours")]),
+            ("demand_forecast", [(Decimal("13"), "megawatthours")]),
+            ("net_generation", [(Decimal("8"), "megawatthours")]),
+            ("total_interchange", [(Decimal("-2"), "megawatthours")]),
+        ):
+            assert connection.execute(sql.SQL("""
+                SELECT value, value_units FROM {} WHERE known_until IS NULL
+            """).format(sql.Identifier(gold, f"electricity_{metric}_hourly_history"))).fetchall() == expected_rows
         assert connection.execute(sql.SQL("""
-            SELECT demand, demand_forecast, net_generation, total_interchange, demand_units
-            FROM {}
-        """).format(sql.Identifier(gold, "electricity_metrics_hourly_latest"))).fetchall() == [
-            (expected, Decimal("13"), Decimal("8"), Decimal("-2"), "megawatthours"),
+            SELECT fueltype, generation FROM {} WHERE known_until IS NULL ORDER BY fueltype
+        """).format(sql.Identifier(gold, "generation_by_fuel_hourly_history"))).fetchall() == [
+            ("BAT", Decimal("-7")), ("SUN", expected), ("WND", Decimal("80")),
         ]
-        assert connection.execute(sql.SQL("""
-            SELECT solar_generation, solar_units, wind_generation, wind_units,
-                   battery_generation, coal_generation
-            FROM {}
-        """).format(sql.Identifier(gold, "generation_by_fuel_hourly_latest"))).fetchall() == [
-            (expected, "megawatthours", Decimal("80"), "megawatthours", Decimal("-7"), None),
-        ]
+
 
 
 def test_unmapped_fuel_code_fails_build(warehouse):
@@ -239,6 +248,52 @@ def test_unmapped_fuel_code_fails_build(warehouse):
     assert result.returncode != 0
     assert "FAIL" in result.stdout
     assert "accepted_values" in result.stdout
+
+
+def test_metric_histories_preserve_provenance_and_independent_intervals(warehouse):
+    dsn, source, target, run = warehouse
+    expected = {}
+    start = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    with psycopg.connect(dsn) as connection:
+        table = sql.Identifier(source, "eia930_region_hourly_vintages")
+        connection.execute(sql.SQL("DELETE FROM {}").format(table))
+        for metric, code in (
+            ("demand", "D"), ("demand_forecast", "DF"),
+            ("net_generation", "NG"), ("total_interchange", "TI"),
+        ):
+            expected[metric] = []
+            for respondent in ("NYIS", "CISO"):
+                for hour in (0, 1):
+                    period = datetime(2026, 11, 1, hour, tzinfo=timezone.utc)
+                    for version, value in enumerate(("10.1234567890123456789", "20", None)):
+                        observed = start + timedelta(hours=version)
+                        inserted = observed + timedelta(seconds=1)
+                        run_id = f"{code}-{respondent}-{hour}-{version}"
+                        connection.execute(sql.SQL("""
+                            INSERT INTO {} (period, respondent, respondent_name, type,
+                                value, value_units, observed_at, inserted_at, ingestion_run_id)
+                            VALUES (%s, %s, %s, %s, %s, 'megawatthours', %s, %s, %s)
+                        """).format(table), (
+                            f"2026-11-01T{hour:02}", respondent, respondent, code,
+                            value, observed, inserted, run_id,
+                        ))
+                        expected[metric].append((
+                            period, respondent, respondent, Decimal(value) if value else None,
+                            "megawatthours", observed, inserted, run_id, observed,
+                            observed + timedelta(hours=1) if version < 2 else None,
+                        ))
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    with psycopg.connect(dsn) as connection:
+        for metric, rows in expected.items():
+            result = connection.execute(sql.SQL("""
+                SELECT * FROM {} ORDER BY respondent, period, observed_at
+            """).format(sql.Identifier(f"{target}_gold", f"electricity_{metric}_hourly_history")))
+            assert [column.name for column in result.description] == [
+                "period", "respondent", "respondent_name", "value", "value_units",
+                "observed_at", "inserted_at", "ingestion_run_id", "known_from", "known_until",
+            ]
+            assert result.fetchall() == sorted(rows, key=lambda row: (row[1], row[0], row[5]))
 
 
 def test_gold_tied_timestamps_have_one_current_version(warehouse):
@@ -257,7 +312,7 @@ def test_gold_tied_timestamps_have_one_current_version(warehouse):
     assert result.returncode == 0, result.stdout + result.stderr
     with psycopg.connect(dsn) as connection:
         for history, value_column in (
-            ("electricity_metrics_hourly_history", "value"),
+            ("electricity_demand_hourly_history", "value"),
             ("generation_by_fuel_hourly_history", "generation"),
         ):
             assert connection.execute(sql.SQL("""
@@ -267,3 +322,97 @@ def test_gold_tied_timestamps_have_one_current_version(warehouse):
                 datetime(2026, 11, 2, 4, tzinfo=timezone.utc),
                 datetime(2026, 11, 2, 4, tzinfo=timezone.utc),
             )).fetchall() == [(Decimal("77"), "tied")]
+
+
+@pytest.mark.parametrize("legacy", ["none", "cleanup", "build"])
+def test_retire_legacy_gold_views(warehouse, legacy):
+    dsn, source, target, run = warehouse
+    gold = f"{target}_gold"
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    old_names = [
+        "electricity_metrics_hourly_latest", "generation_by_fuel_hourly_latest",
+        "electricity_metrics_hourly_history",
+    ]
+    with psycopg.connect(dsn) as connection:
+        original_count = connection.execute(sql.SQL("SELECT count(*) FROM {}").format(
+            sql.Identifier(source, "eia930_region_hourly_vintages"),
+        )).fetchone()
+        if legacy != "none":
+            connection.execute(sql.SQL("CREATE VIEW {} AS SELECT * FROM {}").format(
+                sql.Identifier(gold, old_names[2]),
+                sql.Identifier(target, "electricity_metrics_hourly_vintages"),
+            ))
+            for name, parent in (
+                (old_names[0], old_names[2]),
+                (old_names[1], "generation_by_fuel_hourly_history"),
+            ):
+                connection.execute(sql.SQL("CREATE VIEW {} AS SELECT * FROM {}").format(
+                    sql.Identifier(gold, name), sql.Identifier(gold, parent),
+                ))
+            if legacy == "cleanup":
+                # Failure on the last drop must undo both earlier drops.
+                connection.execute(sql.SQL("CREATE VIEW {} AS SELECT * FROM {}").format(
+                    sql.Identifier(gold, "external_dependency"), sql.Identifier(gold, old_names[2]),
+                ))
+    if legacy == "cleanup":
+        result = run("run-operation")
+        assert result.returncode != 0
+        with psycopg.connect(dsn) as connection:
+            for name in old_names:
+                assert connection.execute("SELECT to_regclass(%s) IS NOT NULL", (f"{gold}.{name}",)).fetchone() == (True,)
+            connection.execute(sql.SQL("DROP VIEW {}").format(sql.Identifier(gold, "external_dependency")))
+    if legacy == "build":
+        # Standard dbt can remove obsolete dependent views during a full build.
+        result = run()
+        assert result.returncode == 0, result.stdout + result.stderr
+    for _ in range(2):
+        result = run("run-operation")
+        assert result.returncode == 0, result.stdout + result.stderr
+    with psycopg.connect(dsn) as connection:
+        names = {row[0] for row in connection.execute(
+            "SELECT viewname FROM pg_views WHERE schemaname = %s", (gold,),
+        )}
+        assert names == {
+            "electricity_demand_hourly_history", "electricity_demand_forecast_hourly_history",
+            "electricity_net_generation_hourly_history", "electricity_total_interchange_hourly_history",
+            "generation_by_fuel_hourly_history",
+        }
+        assert connection.execute(sql.SQL("SELECT count(*) FROM {}").format(
+            sql.Identifier(source, "eia930_region_hourly_vintages"),
+        )).fetchone() == original_count
+
+
+def test_retirement_requires_all_replacements(warehouse):
+    dsn, _, target, run = warehouse
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    with psycopg.connect(dsn) as connection:
+        connection.execute(sql.SQL("DROP VIEW {}").format(
+            sql.Identifier(f"{target}_gold", "electricity_demand_forecast_hourly_history"),
+        ))
+    result = run("run-operation")
+    assert result.returncode != 0
+    assert "Build and test the replacement views first" in result.stdout
+
+
+def test_first_deployment_builds_empty_history_views(warehouse, monkeypatch):
+    dsn, source, target, run = warehouse
+    monkeypatch.setenv("DBT_BRONZE_SCHEMA", source)
+    with psycopg.connect(dsn) as connection:
+        connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(source)))
+        prepare_eia930_sources(connection)
+        prepare_eia930_sources(connection)
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    result = run("run-operation")
+    assert result.returncode == 0, result.stdout + result.stderr
+    with psycopg.connect(dsn) as connection:
+        names = connection.execute(
+            "SELECT viewname FROM pg_views WHERE schemaname = %s", (f"{target}_gold",),
+        ).fetchall()
+        assert len(names) == 5
+        for (name,) in names:
+            assert connection.execute(sql.SQL("SELECT count(*) FROM {}").format(
+                sql.Identifier(f"{target}_gold", name),
+            )).fetchone() == (0,)

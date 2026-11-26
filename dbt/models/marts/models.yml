@@ -1,18 +1,50 @@
 version: 2
 
 models:
-  - name: electricity_metrics_hourly_history
-    description: One row per hour, respondent, metric, and vintage. Knowledge intervals are inclusive at known_from and exclusive at known_until; NULL means current.
+  - name: electricity_demand_hourly_history
+    description: All demand revisions per hour and respondent. Knowledge intervals are inclusive at known_from and exclusive at known_until; NULL means current.
     data_tests:
       - unique_grain:
           arguments:
-            columns: [period, respondent, metric, ingestion_run_id]
-  - name: electricity_metrics_hourly_latest
-    description: One row per hour and respondent, with the latest version of each metric pivoted into columns. Missing metrics remain NULL. Last timestamps summarize the contributing observations; per-metric provenance is in history.
-    data_tests:
+            columns: [period, respondent, ingestion_run_id]
       - unique_grain:
           arguments:
             columns: [period, respondent]
+          config:
+            where: "known_until is null"
+  - name: electricity_demand_forecast_hourly_history
+    description: All demand forecast revisions per hour and respondent. Knowledge intervals are inclusive at known_from and exclusive at known_until; NULL means current.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [period, respondent, ingestion_run_id]
+      - unique_grain:
+          arguments:
+            columns: [period, respondent]
+          config:
+            where: "known_until is null"
+  - name: electricity_net_generation_hourly_history
+    description: All net generation revisions per hour and respondent. Knowledge intervals are inclusive at known_from and exclusive at known_until; NULL means current.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [period, respondent, ingestion_run_id]
+      - unique_grain:
+          arguments:
+            columns: [period, respondent]
+          config:
+            where: "known_until is null"
+  - name: electricity_total_interchange_hourly_history
+    description: All total interchange revisions per hour and respondent. Knowledge intervals are inclusive at known_from and exclusive at known_until; NULL means current.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [period, respondent, ingestion_run_id]
+      - unique_grain:
+          arguments:
+            columns: [period, respondent]
+          config:
+            where: "known_until is null"
   - name: generation_by_fuel_hourly_history
     description: One row per hour, respondent, fuel, and vintage, with collection-time knowledge intervals and original provenance.
     data_tests:
@@ -24,9 +56,3 @@ models:
             columns: [period, respondent, fueltype]
           config:
             where: "known_until is null"
-  - name: generation_by_fuel_hourly_latest
-    description: One row per hour and respondent, with the latest generation and reported units pivoted into fuel columns. Missing values remain NULL. Summary timestamps describe contributing observations; per-fuel provenance remains in history.
-    data_tests:
-      - unique_grain:
-          arguments:
-            columns: [period, respondent]

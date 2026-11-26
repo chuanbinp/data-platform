@@ -235,15 +235,17 @@ flowchart TD
     region_raw --> region_typed
     fuel_raw --> fuel_typed
 
-    subgraph gold["Gold · analytics views"]
-        region_history["electricity_metrics_hourly_history<br/>Per-metric knowledge intervals"]
-        region_latest["electricity_metrics_hourly_latest<br/>One row per hour and respondent"]
-        fuel_history["generation_by_fuel_hourly_history<br/>Per-fuel knowledge intervals"]
-        fuel_latest["generation_by_fuel_hourly_latest<br/>One row per hour and respondent; fuel columns"]
-        region_history -->|current versions; pivot metrics| region_latest
-        fuel_history -->|current versions; pivot fuels| fuel_latest
+    subgraph gold["Gold · history views"]
+        demand["electricity_demand_hourly_history"]
+        forecast["electricity_demand_forecast_hourly_history"]
+        generation["electricity_net_generation_hourly_history"]
+        interchange["electricity_total_interchange_hourly_history"]
+        fuel_history["generation_by_fuel_hourly_history"]
     end
-    region_typed --> region_history
+    region_typed --> demand
+    region_typed --> forecast
+    region_typed --> generation
+    region_typed --> interchange
     fuel_typed --> fuel_history
 
     classDef default fill:#eaf6e9,stroke:#2e6b35,color:#193a1d
@@ -255,7 +257,7 @@ flowchart TD
 
 - **Bronze:** download each dataset and append changed versions in one transaction.
 - **Silver:** validate the source and build typed staging views from `dbt/models/staging/eia930/`.
-- **Gold:** build the dataset's history and dashboard views from `dbt/models/marts/`.
+- **Gold:** build the dataset's history views from `dbt/models/marts/`.
 
 There is one active DAG run at a time. Each downstream task requires its own
 upstream task to succeed. Gold does not rebuild Silver.
@@ -271,23 +273,27 @@ and update view definitions.
 
 | View in `gold` | Grain |
 | --- | --- |
-| `electricity_metrics_hourly_history` | Hour × respondent × metric × version |
-| `electricity_metrics_hourly_latest` | Hour × respondent; demand, forecast, generation, and interchange columns |
+| `electricity_demand_hourly_history` | Hour × respondent × version |
+| `electricity_demand_forecast_hourly_history` | Hour × respondent × version |
+| `electricity_net_generation_hourly_history` | Hour × respondent × version |
+| `electricity_total_interchange_hourly_history` | Hour × respondent × version |
 | `generation_by_fuel_hourly_history` | Hour × respondent × fuel × version |
-| `generation_by_fuel_hourly_latest` | Hour × respondent; generation and unit columns per fuel |
 
 Use a point-in-time query to retrieve the versions observed as of a UTC cutoff:
 
 ```sql
-SELECT period, respondent, metric, value, value_units
-FROM gold.electricity_metrics_hourly_history
+SELECT period, respondent, value, value_units
+FROM gold.electricity_demand_hourly_history
 WHERE known_from <= TIMESTAMPTZ '2026-11-24 00:00:00+00'
   AND (known_until > TIMESTAMPTZ '2026-11-24 00:00:00+00'
        OR known_until IS NULL);
 ```
 
-The cutoff uses collection time, not EIA publication time. Latest marts pivot
-current versions, keeping missing values as NULL; detailed provenance stays in history.
+The cutoff uses collection time, not EIA publication time. Every Gold view retains
+all revisions and their provenance. For current data, use
+`WHERE known_until IS NULL`; current NULL values remain NULL. Electricity views
+share `value` and `value_units` columns; fuel history uses `generation` and
+`generation_units`. The dashboard shows all revisions by default.
 
 ## CI/CD
 

@@ -112,6 +112,8 @@ elif name == 'docker':
         sys.exit(1)
     elif args[0] == 'ps':
         if os.environ.get('ATTACHED_VOLUME'): print('external-container')
+    elif args[0] == 'compose' and 'dbt' in args and os.environ.get('FAIL_DBT') in args:
+        sys.exit(1)
     elif args[0] == 'compose' and 'ps' in args:
         if mount.exists(): print('production-postgres')
     elif args[0] == 'compose' and 'rm' in args:
@@ -182,8 +184,10 @@ def test_versioning_and_unrelated_objects_are_rejected(environment):
     assert execute(environment, "backup.sh").returncode != 0
 
 
-@pytest.mark.parametrize("bucket_ready", [True, False])
-def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health(environment, bucket_ready):
+@pytest.mark.parametrize("bucket_ready,fail_dbt", [
+    (True, ""), (False, ""), (True, "build"), (True, "run-operation"),
+])
+def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health(environment, bucket_ready, fail_dbt):
     root = Path(environment["PLATFORM_ROOT"])
     release = root / "releases" / "test-release"
     scripts = release / "docker"
@@ -197,6 +201,7 @@ def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health
     (release / "images.env").write_text("AIRFLOW_IMAGE=test-only\n")
     (root / "tunnel-token").write_text("test-only")
     (root / "dashboard-url").write_text("https://dashboard.example")
+    environment["FAIL_DBT"] = fail_dbt
     if not bucket_ready:
         bucket = Path(environment["MOCK_BUCKET"])
         bucket.write_text(json.dumps(json.loads(bucket.read_text()) | {"versioning": {"enabled": True}}))
@@ -204,11 +209,20 @@ def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health
     log = commands(environment)
     enable = [i for i, c in enumerate(log) if c == ["systemctl", "enable", "--now", "data-platform-backup.timer"]]
     stops = [i for i, c in enumerate(log) if c[0] == "docker" and "stop" in c]
-    if bucket_ready:
+    if bucket_ready and fail_dbt:
+        assert result.returncode != 0
+        assert not enable
+        assert not any(c[0] == "docker" and "up" in c and "dashboard" in c for c in log)
+        if fail_dbt == "build":
+            assert not any("retire_legacy_gold_views" in c for c in log)
+    elif bucket_ready:
         assert result.returncode == 0, result.stderr
         check = next(i for i, c in enumerate(log) if c[:4] == ["gcloud", "storage", "buckets", "describe"])
         health = next(i for i, c in enumerate(log) if c[0] == "curl" and c[-1] == "https://dashboard.example/api/health")
-        assert check < stops[0] < health < enable[0]
+        build = next(i for i, c in enumerate(log) if c[-2:] == ["dbt", "build"])
+        cleanup = next(i for i, c in enumerate(log) if c[-2:] == ["run-operation", "retire_legacy_gold_views"])
+        start = next(i for i, c in enumerate(log) if c[0] == "docker" and "up" in c and "dashboard" in c)
+        assert check < stops[0] < build < cleanup < start < health < enable[0]
     else:
         assert result.returncode != 0
         assert not stops and not enable
