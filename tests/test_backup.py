@@ -119,6 +119,7 @@ elif name == 'docker':
     elif args[0] == 'compose' and 'rm' in args:
         mount.unlink(missing_ok=True)
     elif args[0] == 'compose' and 'up' in args:
+        if os.environ.get('FAIL_API_START') and 'airflow-api-server' in args: sys.exit(1)
         if os.environ.get('FAIL_RESTART'): sys.exit(1)
         if args[-1] == 'postgres': mount.write_text(active)
     elif '--environment' in args:
@@ -185,7 +186,7 @@ def test_versioning_and_unrelated_objects_are_rejected(environment):
 
 
 @pytest.mark.parametrize("bucket_ready,fail_dbt", [
-    (True, ""), (False, ""), (True, "build"), (True, "run-operation"),
+    (True, ""), (False, ""), (True, "build"), (True, "run-operation"), (True, "api"),
 ])
 def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health(environment, bucket_ready, fail_dbt):
     root = Path(environment["PLATFORM_ROOT"])
@@ -202,6 +203,8 @@ def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health
     (root / "tunnel-token").write_text("test-only")
     (root / "dashboard-url").write_text("https://dashboard.example")
     environment["FAIL_DBT"] = fail_dbt
+    if fail_dbt == "api":
+        environment["FAIL_API_START"] = "1"
     if not bucket_ready:
         bucket = Path(environment["MOCK_BUCKET"])
         bucket.write_text(json.dumps(json.loads(bucket.read_text()) | {"versioning": {"enabled": True}}))
@@ -212,7 +215,11 @@ def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health
     if bucket_ready and fail_dbt:
         assert result.returncode != 0
         assert not enable
-        assert not any(c[0] == "docker" and "up" in c and "dashboard" in c for c in log)
+        if fail_dbt == "api":
+            assert not any(c[0] == "docker" and "up" in c and "airflow-scheduler" in c for c in log)
+            assert any(c[0] == "docker" and "logs" in c for c in log)
+        else:
+            assert not any(c[0] == "docker" and "up" in c and "dashboard" in c for c in log)
         if fail_dbt == "build":
             assert not any("retire_legacy_gold_views" in c for c in log)
     elif bucket_ready:
@@ -222,7 +229,11 @@ def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health
         build = next(i for i, c in enumerate(log) if c[-2:] == ["dbt", "build"])
         cleanup = next(i for i, c in enumerate(log) if c[-2:] == ["run-operation", "retire_legacy_gold_views"])
         start = next(i for i, c in enumerate(log) if c[0] == "docker" and "up" in c and "dashboard" in c)
-        assert check < stops[0] < build < cleanup < start < health < enable[0]
+        workers = next(i for i, c in enumerate(log) if c[0] == "docker" and "up" in c and "airflow-scheduler" in c)
+        assert "airflow-dag-processor" not in log[start]
+        assert "--wait" in log[start] and "600" in log[start]
+        assert "--wait" in log[workers] and "600" in log[workers]
+        assert check < stops[0] < build < cleanup < start < workers < health < enable[0]
     else:
         assert result.returncode != 0
         assert not stops and not enable

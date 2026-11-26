@@ -45,6 +45,7 @@ on_exit() {
     if (( status != 0 )); then
         echo "Deployment failed. Previous release files and all volumes are retained." >&2
         compose ps >&2 || true
+        compose logs --no-color --tail 80 airflow-api-server airflow-scheduler airflow-dag-processor >&2 || true
         if "$paused_by_deploy"; then
             # Airflow may already be stopped; restore scheduling directly in metadata.
             sql airflow "UPDATE dag SET is_paused = false WHERE dag_id = 'eia930_ingestion'" > /dev/null || true
@@ -89,9 +90,14 @@ compose run --rm --no-deps airflow-init
 echo "Building and validating warehouse views before restarting services"
 compose run --rm --no-deps dbt build
 compose run --rm --no-deps dbt run-operation retire_legacy_gold_views
-# The one-off runs above completed initialization; do not start them again via dependencies.
-compose up -d --no-deps --no-build --wait --wait-timeout 300 \
-    dashboard airflow-api-server airflow-scheduler airflow-dag-processor cloudflared
+# Warm up the API before starting the scheduler and DAG processor on the small VM.
+# Initialization already completed; do not start those one-off services again.
+echo "Starting dashboard and Airflow API"
+compose up -d --no-deps --no-build --wait --wait-timeout 600 \
+    dashboard airflow-api-server cloudflared
+echo "Starting Airflow scheduler and DAG processor"
+compose up -d --no-deps --no-build --wait --wait-timeout 600 \
+    airflow-scheduler airflow-dag-processor
 
 echo "Checking tunnel connectivity and public dashboard"
 compose exec -T dashboard python - <<'PY'

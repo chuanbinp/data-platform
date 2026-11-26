@@ -57,16 +57,22 @@ services:
   airflow-api-server:
     <<: *airflow-production
     build: !reset null
+    healthcheck:
+      start_period: 180s
     volumes: !override
       - airflow_logs:/opt/airflow/logs
   airflow-scheduler:
     <<: *airflow-production
     build: !reset null
+    healthcheck:
+      start_period: 180s
     volumes: !override
       - airflow_logs:/opt/airflow/logs
   airflow-dag-processor:
     <<: *airflow-production
     build: !reset null
+    healthcheck:
+      start_period: 180s
     volumes: !override
       - airflow_logs:/opt/airflow/logs
 
