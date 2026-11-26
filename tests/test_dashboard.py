@@ -16,8 +16,34 @@ pytest.importorskip("fastapi")
 pytest.importorskip("psycopg_pool")
 from fastapi.testclient import TestClient
 
+from data_platform.dashboard import relation_source
 from data_platform.dashboard.app import app, encode
 from data_platform.dashboard.provision import provision
+
+
+@pytest.mark.parametrize("name", [
+    "eia930_region_hourly_vintages", "eia930_fuel_type_hourly_vintages",
+    "electricity_metrics_hourly_vintages", "generation_by_fuel_hourly_vintages",
+    "electricity_demand_hourly_history", "electricity_demand_forecast_hourly_history",
+    "electricity_net_generation_hourly_history", "electricity_total_interchange_hourly_history",
+    "generation_by_fuel_hourly_history",
+])
+def test_electricity_relation_source(name):
+    assert relation_source(name) == "eia930"
+
+
+@pytest.mark.parametrize("name", [
+    "nws_locations", "nws_observation_vintages", "nws_forecast_hourly_vintages",
+    "weather_observation_vintages", "weather_forecast_hourly_vintages",
+    "weather_observation_history", "weather_forecast_hourly_history",
+])
+def test_weather_relation_source(name):
+    assert relation_source(name) == "nws"
+
+
+@pytest.mark.parametrize("name", ["readings", "typed", "weathered_data", "electricity"])
+def test_unrecognized_relation_source(name):
+    assert relation_source(name) == "other"
 
 
 def test_exact_values_and_utc():
@@ -116,6 +142,12 @@ def test_browsing_pagination_filters_and_precision(explorer):
         (namespaces[0], "readings"),
         (namespaces[1], "typed"),
     }
+    assert response.json()["sources"] == [
+        {"id": "eia930", "label": "Electricity (EIA930)"},
+        {"id": "nws", "label": "Weather (NWS)"},
+        {"id": "other", "label": "Other"},
+    ]
+    assert all(r["source"] == "other" for r in response.json()["relations"])
     base = f"/api/relations/{namespaces[0]}/readings"
     columns = client.get(f"{base}/columns").json()["columns"]
     assert {c["name"] for c in columns} == {
@@ -140,6 +172,32 @@ def test_browsing_pagination_filters_and_precision(explorer):
     ).json()
     assert len(third["rows"]) == 5 and not third["has_more"]
     assert client.get("/api/health").status_code == 200
+
+
+@pytest.mark.integration
+def test_source_discovery_across_configured_schemas(explorer):
+    client, namespaces, *_ = explorer
+    names = (
+        ("eia930_region_hourly_vintages", "nws_locations"),
+        ("electricity_metrics_hourly_vintages", "weather_observation_vintages"),
+        ("generation_by_fuel_hourly_history", "weather_forecast_hourly_history"),
+    )
+    expected = {}
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as admin:
+        for index, (schema, pair) in enumerate(zip(namespaces, names)):
+            for name, source in zip(pair, ("eia930", "nws")):
+                statement = (
+                    "CREATE TABLE {} (value integer)" if index == 0
+                    else "CREATE VIEW {} AS SELECT 1 AS value"
+                )
+                admin.execute(sql.SQL(statement).format(sql.Identifier(schema, name)))
+                expected[schema, name] = (source, "table" if index == 0 else "view")
+    found = {
+        (row["schema"], row["name"]): (row["source"], row["kind"])
+        for row in client.get("/api/relations").json()["relations"]
+    }
+    assert expected.items() <= found.items()
+    assert found[namespaces[0], "readings"] == ("other", "table")
 
 
 @pytest.mark.integration
@@ -198,6 +256,7 @@ def test_default_observation_sort(explorer):
     assert default["rows"][0]["id"] == 205
     assert default["sort"] == {
         "column": "observed_at",
+        "columns": ["observed_at"],
         "direction": "desc",
         "default": True,
     }
@@ -216,6 +275,47 @@ def test_default_observation_sort(explorer):
     latest = client.get(f"/api/relations/{namespaces[2]}/latest/rows").json()
     assert latest["sort"]["column"] == "last_observed_at"
     assert latest["rows"][0]["id"] == 205
+
+
+@pytest.mark.integration
+def test_layer_sort_defaults_and_manual_override(explorer):
+    client, namespaces, *_ = explorer
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as admin:
+        raw = sql.Identifier(namespaces[0], "sort_examples")
+        admin.execute(sql.SQL("""
+            CREATE TABLE {} (id integer, period timestamptz, observed_at timestamptz);
+        """).format(raw))
+        admin.execute(sql.SQL("""
+            INSERT INTO {} VALUES
+                (1, '2026-11-25T00:00:00Z', '2026-11-25T01:00:00Z'),
+                (2, '2026-11-24T00:00:00Z', '2026-11-26T03:00:00Z'),
+                (3, '2026-11-25T00:00:00Z', '2026-11-25T02:00:00Z'),
+                (4, NULL, NULL)
+        """).format(raw))
+        for namespace in namespaces[1:]:
+            admin.execute(sql.SQL("""
+                CREATE VIEW {} AS SELECT *, observed_at AS known_from FROM {}
+            """).format(sql.Identifier(namespace, "sort_examples"), raw))
+
+    for namespace, columns, expected in zip(namespaces, (
+        ["observed_at"], ["period", "observed_at"], ["period", "known_from"],
+    ), ([2, 3, 1, 4], [3, 1, 2, 4], [3, 1, 2, 4])):
+        url = f"/api/relations/{namespace}/sort_examples/rows"
+        response = client.get(url).json()
+        assert [row["id"] for row in response["rows"]] == expected
+        assert response["sort"] == {
+            "column": columns[0], "columns": columns,
+            "direction": "desc", "default": True,
+        }
+        # Pagination keeps both revisions in order, with no implicit date filter.
+        pages = [client.get(url, params={"page_size": 1, "page": page}).json()
+                 for page in (1, 2)]
+        assert [result["rows"][0]["id"] for result in pages] == expected[:2]
+        manual = client.get(url, params={"sort": "id", "direction": "asc"}).json()
+        assert [row["id"] for row in manual["rows"]] == [1, 2, 3, 4]
+        assert manual["sort"] == {
+            "column": "id", "columns": ["id"], "direction": "asc", "default": False,
+        }
 
 
 @pytest.mark.integration

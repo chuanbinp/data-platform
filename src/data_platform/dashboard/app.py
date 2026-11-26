@@ -17,7 +17,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout, TooManyRequests
 
-from data_platform.dashboard import schemas
+from data_platform.dashboard import SOURCES, relation_source, schemas
 from data_platform.dashboard.security import ApiLimits, RequestBounds
 
 logger = logging.getLogger(__name__)
@@ -195,7 +195,11 @@ def relations():
         """,
             (list(schemas()),),
         ).fetchall()
-    return {"schemas": schemas(), "relations": rows}
+    return {
+        "schemas": schemas(),
+        "sources": [{"id": source["id"], "label": source["label"]} for source in SOURCES],
+        "relations": [dict(row, source=relation_source(row["name"])) for row in rows],
+    }
 
 
 @app.get("/api/relations/{schema}/{table}/columns")
@@ -264,24 +268,41 @@ def filter_conditions(columns, raw_values):
     return where, values
 
 
-def sort_order(metadata, sort, direction):
-    """Choose the requested sort or the newest available observation timestamp."""
+def sort_order(metadata, sort, direction, schema):
+    """Use layer-specific defaults unless a column sort was requested."""
     column_types = {column["name"]: column["type"] for column in metadata}
-    default_sort = next(
-        (column for column in DEFAULT_SORT_COLUMNS if column in column_types),
-        next(iter(column_types), None),
-    )
-    column = sort or default_sort
+    layers = schemas()
+    if schema == layers[0]:
+        preferred = ("observed_at",)
+    elif schema == layers[-1]:
+        preferred = ("period", "known_from")
+    else:
+        preferred = ("period", "observed_at")
+    columns = [column for column in preferred if column in column_types]
+    if not columns:
+        fallback = next(
+            (column for column in DEFAULT_SORT_COLUMNS if column in column_types),
+            next(iter(column_types), None),
+        )
+        columns = [fallback] if fallback else []
+    if sort:
+        columns = [sort]
     direction = direction if sort else "desc"
-    order = sql.SQL("to_jsonb(t)::text ASC")
-    if column:
+    clauses = []
+    for column in columns:
         expression = sql.Identifier(column)
         if column_types[column] == "json":
             expression = sql.SQL("{}::jsonb").format(expression)
-        order = sql.SQL("{} {} NULLS LAST, to_jsonb(t)::text ASC").format(
+        clauses.append(sql.SQL("{} {} NULLS LAST").format(
             expression, sql.SQL(direction.upper())
-        )
-    return order, {"column": column, "direction": direction, "default": not sort}
+        ))
+    clauses.append(sql.SQL("to_jsonb(t)::text ASC"))
+    return sql.SQL(", ").join(clauses), {
+        "column": columns[0] if columns else None,
+        "columns": columns,
+        "direction": direction,
+        "default": not sort,
+    }
 
 
 @app.get("/api/relations/{schema}/{table}/rows")
@@ -305,7 +326,7 @@ def rows(
         ):
             raise HTTPException(422, "Unknown column")
         where, values = filter_conditions(match_column, match_value)
-        order, sorting = sort_order(metadata, sort, direction)
+        order, sorting = sort_order(metadata, sort, direction, schema)
         query = sql.SQL(
             "SELECT t.* FROM {} AS t{} ORDER BY {} LIMIT %s OFFSET %s"
         ).format(sql.Identifier(schema, table), where, order)
