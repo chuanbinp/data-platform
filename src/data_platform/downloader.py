@@ -15,6 +15,7 @@ from types import TracebackType
 import httpx
 
 logger = logging.getLogger(__name__)
+USER_AGENT = "data-platform"
 
 QueryValue = str | int | float | bool | None
 QueryParams = dict[str, QueryValue | Sequence[QueryValue]]
@@ -84,6 +85,8 @@ class Downloader:
         configured status codes. Redirects and other HTTP errors fail immediately.
         Only GET is exposed so write requests cannot be retried accidentally.
         """
+        request_headers = httpx.Headers({"User-Agent": USER_AGENT})
+        request_headers.update(headers or {})
         policy = self.retry_policy
         ceiling = policy.base_delay
         for attempt in range(1, policy.max_attempts + 1):
@@ -91,7 +94,7 @@ class Downloader:
             retry_after = None
             try:
                 response = self._client.get(
-                    url, params=params, headers=headers, timeout=self.timeout
+                    url, params=params, headers=request_headers, timeout=self.timeout
                 )
             except (
                 httpx.TimeoutException,

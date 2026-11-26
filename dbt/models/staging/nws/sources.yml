@@ -1,0 +1,50 @@
+version: 2
+
+sources:
+  - name: nws
+    schema: "{{ env_var('DBT_BRONZE_SCHEMA', 'bronze') }}"
+    tables:
+      - name: nws_observation_vintages
+        description: Changed-only station observations with explicit raw value, unit, and quality-code columns.
+        data_tests:
+          - unique_grain:
+              arguments:
+                columns: [location, station_id, period, ingestion_run_id]
+        columns:
+          - name: location
+            data_tests: [not_null]
+          - name: station_id
+            data_tests: [not_null]
+          - name: period
+            data_tests: [not_null]
+          - name: observed_at
+            data_tests: [not_null]
+          - name: inserted_at
+            data_tests: [not_null]
+          - name: ingestion_run_id
+            data_tests: [not_null]
+      - name: nws_forecast_hourly_vintages
+        description: Changed-only hourly forecasts with explicit raw values and units; collection time determines availability.
+        data_tests:
+          - unique_grain:
+              arguments:
+                columns: [location, station_id, period, ingestion_run_id]
+        columns:
+          - name: location
+            data_tests: [not_null]
+          - name: station_id
+            data_tests: [not_null]
+          - name: period
+            data_tests: [not_null]
+          - name: source_updated_at
+            description: NWS updateTime, the last update of the data used to generate the forecast; not our collection time.
+            data_tests: [not_null]
+          - name: period_end
+            description: Source timestamp for the end of the target forecast interval; cast to timestamptz in Silver.
+            data_tests: [not_null]
+          - name: observed_at
+            data_tests: [not_null]
+          - name: inserted_at
+            data_tests: [not_null]
+          - name: ingestion_run_id
+            data_tests: [not_null]

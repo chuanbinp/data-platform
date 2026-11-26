@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from data_platform.downloader import Downloader, RetryPolicy
+from data_platform.downloader import USER_AGENT, Downloader, RetryPolicy
 from data_platform.sources.eia930 import EIA930Client, EIA930Error
 
 START = datetime(2026, 11, 1, tzinfo=timezone.utc)
@@ -48,6 +48,7 @@ def test_region_query_filters_sorting_and_pagination():
 
     def handler(request):
         calls.append(request)
+        assert request.headers["User-Agent"] == USER_AGENT
         params = request.url.params
         assert request.url.path == "/v2/electricity/rto/region-data/data/"
         assert params["api_key"] == "test-secret"

@@ -39,17 +39,17 @@ load_backup_bucket
 check_backup_bucket
 backup_objects > /dev/null
 
-paused_by_deploy=false
+paused_by_deploy=""
 on_exit() {
     status=$?
     if (( status != 0 )); then
         echo "Deployment failed. Previous release files and all volumes are retained." >&2
         compose ps >&2 || true
         compose logs --no-color --tail 80 airflow-api-server airflow-scheduler airflow-dag-processor >&2 || true
-        if "$paused_by_deploy"; then
-            # Airflow may already be stopped; restore scheduling directly in metadata.
-            sql airflow "UPDATE dag SET is_paused = false WHERE dag_id = 'eia930_ingestion'" > /dev/null || true
-        fi
+        # Airflow may already be stopped; restore scheduling directly in metadata.
+        for dag_id in $paused_by_deploy; do
+            sql airflow "UPDATE dag SET is_paused = false WHERE dag_id = '$dag_id'" > /dev/null || true
+        done
     fi
 }
 trap on_exit EXIT
@@ -61,13 +61,18 @@ if [[ -z $(compose ps --status running -q postgres) ]]; then
 fi
 
 metadata_exists=$(sql postgres "SELECT count(*) FROM pg_database WHERE datname = 'airflow'")
-prior_paused=""
+dag_ids=(eia930_ingestion nws_ingestion)
+previously_paused=""
 if [[ "$metadata_exists" == 1 ]] && [[ $(sql airflow "SELECT to_regclass('public.dag') IS NOT NULL") == t ]]; then
-    prior_paused=$(sql airflow "SELECT is_paused FROM dag WHERE dag_id = 'eia930_ingestion'")
-    if [[ "$prior_paused" == f ]]; then
-        compose exec -T airflow-api-server airflow dags pause eia930_ingestion
-        paused_by_deploy=true
-    fi
+    for dag_id in "${dag_ids[@]}"; do
+        prior_paused=$(sql airflow "SELECT is_paused FROM dag WHERE dag_id = '$dag_id'")
+        if [[ "$prior_paused" == t ]]; then
+            previously_paused+=" $dag_id"
+        elif [[ "$prior_paused" == f ]]; then
+            compose exec -T airflow-api-server airflow dags pause "$dag_id"
+            paused_by_deploy+=" $dag_id"
+        fi
+    done
     echo "Waiting for existing tasks to finish"
     deadline=$((SECONDS + 1500))
     while [[ $(sql airflow "SELECT count(*) FROM task_instance WHERE state IN ('running', 'queued')") != 0 ]]; do
@@ -115,16 +120,20 @@ PY
 curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 \
     --connect-timeout 10 --max-time 20 "$url/api/health" > /dev/null
 
-echo "Waiting for EIA-930 DAG discovery"
-deadline=$((SECONDS + 180))
-until [[ $(sql airflow "SELECT count(*) FROM dag WHERE dag_id = 'eia930_ingestion'") == 1 ]]; do
-    (( SECONDS < deadline )) || { echo "DAG was not discovered." >&2; exit 1; }
-    sleep 5
+echo "Waiting for ingestion DAG discovery"
+for dag_id in "${dag_ids[@]}"; do
+    deadline=$((SECONDS + 180))
+    until [[ $(sql airflow "SELECT count(*) FROM dag WHERE dag_id = '$dag_id'") == 1 ]]; do
+        (( SECONDS < deadline )) || { echo "DAG $dag_id was not discovered." >&2; exit 1; }
+        sleep 5
+    done
 done
-if [[ "$prior_paused" != t ]]; then
-    compose exec -T airflow-api-server airflow dags unpause eia930_ingestion
-fi
-paused_by_deploy=false
+for dag_id in "${dag_ids[@]}"; do
+    if [[ " ${previously_paused} " != *" $dag_id "* ]]; then
+        compose exec -T airflow-api-server airflow dags unpause "$dag_id"
+    fi
+done
+paused_by_deploy=""
 
 previous=$(readlink -f "$root/current" || true)
 if [[ -n "$previous" && "$previous" != "$release" ]]; then

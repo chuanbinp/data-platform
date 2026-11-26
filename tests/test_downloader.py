@@ -3,13 +3,14 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from data_platform.downloader import Downloader, RetryPolicy
+from data_platform.downloader import USER_AGENT, Downloader, RetryPolicy
 
 
 def test_success_preserves_params_headers_and_timeout():
     def handler(request):
         assert request.url.params.get_list("fuel[]") == ["SUN", "WND"]
         assert request.headers["Authorization"] == "Bearer secret"
+        assert request.headers["User-Agent"] == USER_AGENT
         assert request.extensions["timeout"]["read"] == 12.0
         return httpx.Response(200, json={"data": [1, 2]})
 
@@ -22,6 +23,20 @@ def test_success_preserves_params_headers_and_timeout():
             )
             assert response.json() == {"data": [1, 2]}
         assert not client.is_closed  # Caller retains ownership.
+
+
+@pytest.mark.parametrize("header", ["User-Agent", "user-agent"])
+def test_source_can_override_user_agent_without_duplicate_headers(header):
+    def handler(request):
+        assert request.headers.get_list("User-Agent") == ["source-specific-agent"]
+        assert request.headers["Accept"] == "application/json"
+        return httpx.Response(200)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        Downloader(client=client).get(
+            "https://example.test/data",
+            headers={header: "source-specific-agent", "Accept": "application/json"},
+        )
 
 
 def test_backoff_jitter_and_cap(caplog):

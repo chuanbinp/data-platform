@@ -10,6 +10,54 @@ from unittest.mock import patch
 
 
 @unittest.skipUnless(importlib.util.find_spec("airflow"), "Airflow is installed in Docker")
+class TestNWSDag(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = Path(__file__).resolve().parents[1] / "dags/nws_ingestion.py"
+        spec = importlib.util.spec_from_file_location("nws_ingestion", path)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+        cls.dag = cls.module.nws_dag
+
+    def test_independent_branches_and_no_catchup(self):
+        self.assertFalse(self.dag.catchup)
+        self.assertEqual(self.dag.max_active_runs, 1)
+        self.assertEqual(len(self.dag.tasks), 6)
+        for dataset in ("observations", "forecasts"):
+            bronze = self.dag.get_task(f"bronze_{dataset}")
+            silver = self.dag.get_task(f"silver_{dataset}")
+            gold = self.dag.get_task(f"gold_{dataset}")
+            self.assertEqual(bronze.upstream_task_ids, set())
+            self.assertEqual(bronze.downstream_task_ids, {silver.task_id})
+            self.assertEqual(silver.upstream_task_ids, {bronze.task_id})
+            self.assertEqual(silver.downstream_task_ids, {gold.task_id})
+            self.assertEqual(gold.upstream_task_ids, {silver.task_id})
+            self.assertEqual(gold.downstream_task_ids, set())
+            model = {
+                "observations": "stg_nws_observation_vintages",
+                "forecasts": "stg_nws_forecast_hourly_vintages",
+            }[dataset]
+            self.assertIn(f"--select +{model}", silver.bash_command)
+            self.assertNotIn(f"--select +{model}+", silver.bash_command)
+            self.assertIn(f"--select {model}+ --exclude {model}", gold.bash_command)
+            for task in (silver, gold):
+                self.assertEqual(task.trigger_rule, "all_success")
+                self.assertIn("{{ task.task_id }}", task.env["DBT_TARGET_PATH"])
+
+    def test_task_passes_observation_window(self):
+        with patch("data_platform.sources.nws.NWSClient") as factory:
+            self.module.ingest_nws(
+                "observations", {"observation_lookback_days": 7},
+                dag_run=SimpleNamespace(dag_id="nws_ingestion"),
+                run_id="manual__test", ti=SimpleNamespace(try_number=2),
+            )
+            factory.return_value.__enter__.return_value.ingest.assert_called_once_with(
+                "observations", schema="bronze", observation_lookback_days=7,
+                ingestion_run_id="nws_ingestion/manual__test/attempt-2",
+            )
+
+
+@unittest.skipUnless(importlib.util.find_spec("airflow"), "Airflow is installed in Docker")
 class TestEIA930Dag(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -30,7 +78,7 @@ class TestEIA930Dag(unittest.TestCase):
                     dag_id="eia930_ingestion",
                     run_after=datetime(2026, 11, 23, 15, 37, tzinfo=timezone.utc),
                 ),
-                run_id="manual__test",
+                run_id="manual__test", ti=SimpleNamespace(try_number=1),
             )
             self.assertEqual(count, 3)
             return client.ingest.call_args.kwargs
@@ -83,10 +131,11 @@ class TestEIA930Dag(unittest.TestCase):
     def test_manual_window_and_stable_run_id(self):
         kwargs = self.call_task("2026-11-01T00:00:00Z", "2026-11-02T00:00:00Z", ["NYIS"])
         self.assertEqual(kwargs, {
+            "schema": "bronze",
             "start": datetime(2026, 11, 1, tzinfo=timezone.utc),
             "end": datetime(2026, 11, 2, tzinfo=timezone.utc),
             "respondents": ["NYIS"],
-            "ingestion_run_id": "eia930_ingestion/manual__test",
+            "ingestion_run_id": "eia930_ingestion/manual__test/attempt-1",
         })
 
     def test_partial_manual_window_fails(self):

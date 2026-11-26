@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from psycopg import sql
 
 from data_platform.downloader import Downloader, QueryParams, RetryPolicy
-from data_platform.ingestor import PostgresIngestor
+from data_platform.ingestor import PostgresIngestor, vintage_table_sql
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,12 @@ DATASETS = {
     "region-data": {
         "table": "eia930_region_hourly_vintages",
         "category_column": "type",
+        "key_columns": ["period", "respondent", "type"],
     },
     "fuel-type-data": {
         "table": "eia930_fuel_type_hourly_vintages",
         "category_column": "fueltype",
+        "key_columns": ["period", "respondent", "fueltype"],
     },
 }
 
@@ -165,12 +167,22 @@ class EIA930Client:
             rows,
             schema=schema,
             table=settings["table"],
-            key_columns=["period", "respondent", category_column],
+            key_columns=settings["key_columns"],
             ingestion_run_id=run_id,
-            setup_sql=_vintage_table_sql(schema, settings["table"], category_column),
+            setup_sql=source_table_sql(schema, dataset),
         )
         logger.info("EIA-930 load completed: dataset=%s inserted=%d run_id=%s", dataset, count, run_id)
         return count
+
+    def close(self) -> None:
+        if self._owns_downloader:
+            self._downloader.close()
+
+    def __enter__(self) -> EIA930Client:
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.close()
 
     def _iter_pages(self, dataset: str, params: QueryParams) -> Iterator[dict[str, Any]]:
         """Fetch pages until the reported total is reached."""
@@ -221,42 +233,20 @@ class EIA930Client:
             if offset == total:
                 return
 
-    def close(self) -> None:
-        if self._owns_downloader:
-            self._downloader.close()
 
-    def __enter__(self) -> EIA930Client:
-        return self
-
-    def __exit__(self, *args) -> None:
-        self.close()
-
-
-def _vintage_table_sql(schema: str, table: str, category: str) -> sql.Composable:
-    """Create the schema, vintage table, and lookup index if missing."""
-    return sql.SQL("""
-        CREATE SCHEMA IF NOT EXISTS {schema};
-        CREATE TABLE IF NOT EXISTS {table} (
-            period text NOT NULL,
-            respondent text NOT NULL,
-            respondent_name text,
-            {category} text NOT NULL,
-            type_name text,
-            value text,
-            value_units text,
-            observed_at timestamptz NOT NULL,
-            ingestion_run_id text NOT NULL,
-            inserted_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-            PRIMARY KEY (period, respondent, {category}, ingestion_run_id)
-        );
-        CREATE INDEX IF NOT EXISTS {index} ON {table}
-            (period, respondent, {category}, observed_at DESC, inserted_at DESC);
-    """).format(
-        schema=sql.Identifier(schema),
-        table=sql.Identifier(schema, table),
-        category=sql.Identifier(category),
-        index=sql.Identifier(f"{table}_lookup_idx"),
-    )
+def source_table_sql(schema: str, dataset: str) -> sql.Composable:
+    """Declare EIA fields; the ingestor owns common revision metadata."""
+    settings = DATASETS[dataset]
+    columns = {
+        "period": "text NOT NULL",
+        "respondent": "text NOT NULL",
+        "respondent_name": "text",
+        settings["category_column"]: "text NOT NULL",
+        "type_name": "text",
+        "value": "text",
+        "value_units": "text",
+    }
+    return vintage_table_sql(schema, settings["table"], columns, settings["key_columns"])
 
 
 def main(argv: Sequence[str] | None = None) -> int:

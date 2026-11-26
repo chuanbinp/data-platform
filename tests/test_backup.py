@@ -132,7 +132,16 @@ elif name == 'docker':
         if os.environ.get('FAIL_DUMP'): sys.exit(1)
     elif 'psql' in args:
         if '-c' in args:
-            print('0' if os.environ.get('FAIL_HEALTH') else '1')
+            query = args[-1]
+            states = json.loads(os.environ.get('MOCK_DAG_STATES', '{}'))
+            if states and 'to_regclass' in query:
+                print('t')
+            elif states and 'SELECT is_paused' in query:
+                print(next((state for dag, state in states.items() if dag in query), ''))
+            elif states and 'FROM task_instance' in query:
+                print('0')
+            else:
+                print('0' if os.environ.get('FAIL_HEALTH') else '1')
             sys.exit(0)
         # Preserve identical text in COPY data after skipping the bootstrap role.
         assert sys.stdin.read().count('CREATE ROLE admin;') == 1
@@ -188,7 +197,13 @@ def test_versioning_and_unrelated_objects_are_rejected(environment):
 @pytest.mark.parametrize("bucket_ready,fail_stage", [
     (True, ""), (False, ""), (True, "build"), (True, "api"),
 ])
-def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health(environment, bucket_ready, fail_stage):
+@pytest.mark.parametrize("dag_states", [None,
+    {"eia930_ingestion": "f", "nws_ingestion": "t"},
+    {"eia930_ingestion": "t", "nws_ingestion": "f"},
+])
+def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health(environment, bucket_ready, fail_stage, dag_states):
+    if dag_states:
+        environment["MOCK_DAG_STATES"] = json.dumps(dag_states)
     root = Path(environment["PLATFORM_ROOT"])
     release = root / "releases" / "test-release"
     scripts = release / "docker"
@@ -210,6 +225,15 @@ def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health
         bucket.write_text(json.dumps(json.loads(bucket.read_text()) | {"versioning": {"enabled": True}}))
     result = subprocess.run(["bash", str(deploy)], env=environment, capture_output=True, text=True)
     log = commands(environment)
+    if bucket_ready:
+        states = dag_states or {"eia930_ingestion": "", "nws_ingestion": ""}
+        for dag, state in states.items():
+            paused = any(c[-3:] == ["dags", "pause", dag] for c in log)
+            unpaused = any(c[-3:] == ["dags", "unpause", dag] for c in log)
+            assert paused == (state == "f")
+            assert unpaused == (not fail_stage and state != "t")
+            if fail_stage and state == "f":
+                assert any("UPDATE dag SET is_paused = false WHERE dag_id = '" + dag + "'" in c for c in log)
     enable = [i for i, c in enumerate(log) if c == ["systemctl", "enable", "--now", "data-platform-backup.timer"]]
     stops = [i for i, c in enumerate(log) if c[0] == "docker" and "stop" in c]
     if bucket_ready and fail_stage:

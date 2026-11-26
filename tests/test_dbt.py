@@ -14,8 +14,8 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
 from data_platform.ingestor import PostgresIngestor
-from data_platform.database import prepare_eia930_sources
-from data_platform.sources.eia930 import DATASETS, _vintage_table_sql
+from data_platform.sources import eia930, nws, prepare_sources
+from data_platform.sources.eia930 import DATASETS
 
 PROJECT = Path(__file__).resolve().parents[1] / "dbt"
 DBT = Path(sys.executable).with_name("dbt")
@@ -58,7 +58,7 @@ def warehouse(tmp_path):
     try:
         loader = PostgresIngestor(dsn)
         values = ["10.1234567890123456789", "20", "10.1234567890123456789", None, " "]
-        for settings in DATASETS.values():
+        for dataset, settings in DATASETS.items():
             category, table = settings["category_column"], settings["table"]
             for index, value in enumerate(values):
                 record = {
@@ -73,8 +73,10 @@ def warehouse(tmp_path):
                     [record], schema=source, table=table,
                     key_columns=["period", "respondent", category],
                     ingestion_run_id=f"run-{index}",
-                    setup_sql=_vintage_table_sql(source, table, category),
+                    setup_sql=eia930.source_table_sql(source, dataset),
                 )
+        with psycopg.connect(dsn) as connection:
+            prepare_sources(connection, source)
         yield dsn, source, target, run
     finally:
         with psycopg.connect(dsn) as connection:
@@ -322,21 +324,130 @@ def test_gold_tied_timestamps_have_one_current_version(warehouse):
             )).fetchall() == [(Decimal("77"), "tied")]
 
 
-def test_first_deployment_builds_empty_history_views(warehouse, monkeypatch):
+def test_first_deployment_builds_empty_history_views(warehouse):
     dsn, source, target, run = warehouse
-    monkeypatch.setenv("DBT_BRONZE_SCHEMA", source)
     with psycopg.connect(dsn) as connection:
         connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(source)))
-        prepare_eia930_sources(connection)
-        prepare_eia930_sources(connection)
+        prepare_sources(connection, source)
+        prepare_sources(connection, source)
     result = run()
     assert result.returncode == 0, result.stdout + result.stderr
     with psycopg.connect(dsn) as connection:
         names = connection.execute(
             "SELECT viewname FROM pg_views WHERE schemaname = %s", (f"{target}_gold",),
         ).fetchall()
-        assert len(names) == 5
+        assert len(names) == 7
         for (name,) in names:
             assert connection.execute(sql.SQL("SELECT count(*) FROM {}").format(
                 sql.Identifier(f"{target}_gold", name),
             )).fetchone() == (0,)
+
+
+def test_nws_revisions_units_and_prediction_cutoff(warehouse):
+    dsn, source, target, run = warehouse
+    loader = PostgresIngestor(dsn)
+    period = datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc)
+    first = datetime(2026, 11, 1, 5, tzinfo=timezone.utc)
+    common = dict(location="nyc", location_name="New York City", station_id="KJFK",
+                  latitude=40.64, longitude=-73.78, period=period)
+    for dataset in ("observations", "forecasts"):
+        settings = nws.DATASETS[dataset]
+        table = settings["table"]
+        # Bronze stores source values as text, like EIA-930; dbt owns conversion.
+        row = dict(common,
+                   temperature_value="50", temperature_units="wmoUnit:degF", temperature_quality_code="V",
+                   wind_speed_value="36", wind_speed_units="wmoUnit:km_h-1")
+        if dataset == "observations":
+            row.update(precipitation_last_hour_value="0.001", precipitation_last_hour_units="wmoUnit:m",
+                       wind_direction_value="315", wind_direction_units="wmoUnit:degree_(angle)")
+        else:
+            row.update(period_end="2026-11-01T07:30:00Z", wind_direction="NW",
+                       source_updated_at="2026-11-01T04:00:00Z")
+        received = first + (timedelta(hours=2) if dataset == "observations" else timedelta())
+        row["observed_at"] = received
+
+        def load(record, run_id):
+            return loader.ingest(
+                [record], schema=source, table=table,
+                key_columns=settings["key_columns"], ingestion_run_id=run_id,
+                setup_sql=nws.source_table_sql(source, dataset),
+            )
+
+        assert load(row, "first") == 1
+        assert load(dict(row, observed_at=received+timedelta(minutes=5)), "unchanged") == 0
+        corrected = dict(row, temperature_value="68", observed_at=received+timedelta(minutes=15))
+        assert load(corrected, "correction") == 1
+        assert load(corrected, "correction") == 0
+        assert load(dict(row, temperature_value=None, observed_at=received+timedelta(minutes=30)), "missing") == 1
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    with psycopg.connect(dsn) as connection:
+        for name in ("weather_observation_history", "weather_forecast_hourly_history"):
+            relation = sql.Identifier(f"{target}_gold", name)
+            rows = connection.execute(sql.SQL("""
+                SELECT temperature_c, wind_speed_ms, temperature_quality_code,
+                       known_from, known_until FROM {} ORDER BY known_from
+            """).format(relation)).fetchall()
+            assert [row[0] for row in rows] == [Decimal(10), Decimal(20), None]
+            assert all(row[1] == Decimal(10) for row in rows)
+            assert all(row[2] == "V" for row in rows)
+            cutoff = rows[0][3] + timedelta(minutes=10)
+            assert rows[0][4] == rows[1][3] and rows[-1][4] is None
+            assert connection.execute(sql.SQL("""
+                SELECT temperature_c FROM {} WHERE known_from <= %s
+                  AND (known_until IS NULL OR %s < known_until)
+            """).format(relation), (cutoff, cutoff)).fetchall() == [(Decimal(10),)]
+            assert connection.execute(sql.SQL("SELECT count(*) FROM {} WHERE known_from <= %s").format(relation),
+                                      (rows[0][3]-timedelta(seconds=1),)).fetchone() == (0,)
+        for dataset in ("observations", "forecasts"):
+            bronze = nws.DATASETS[dataset]["table"]
+            silver = "weather_observation_vintages" if dataset == "observations" else "weather_forecast_hourly_vintages"
+            gold = "weather_observation_history" if dataset == "observations" else "weather_forecast_hourly_history"
+
+            def columns(schema, table):
+                return dict(connection.execute("""
+                    SELECT column_name, data_type FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s
+                """, (schema, table)).fetchall())
+
+            raw_columns = columns(source, bronze)
+            typed_columns = columns(target, silver)
+            history_columns = columns(f"{target}_gold", gold)
+            assert raw_columns["temperature_value"] == "text"
+            assert typed_columns["temperature_c"] == "numeric"
+            assert set(history_columns) - set(typed_columns) == {"known_from", "known_until"}
+            all_columns = set(raw_columns) | set(typed_columns) | set(history_columns)
+            assert not {"payload", "source_data"}.intersection(all_columns)
+            if dataset == "forecasts":
+                assert raw_columns["source_updated_at"] == "text"
+                assert typed_columns["source_updated_at"] == "timestamp with time zone"
+            else:
+                assert "source_updated_at" not in raw_columns
+        assert connection.execute(sql.SQL("SELECT source_updated_at, period_end FROM {} LIMIT 1").format(
+            sql.Identifier(f"{target}_gold", "weather_forecast_hourly_history"))).fetchone() == (
+                datetime(2026, 11, 1, 4, tzinfo=timezone.utc),
+                datetime(2026, 11, 1, 7, 30, tzinfo=timezone.utc),
+            )
+        assert connection.execute(sql.SQL("SELECT precipitation_last_hour_mm FROM {} LIMIT 1").format(
+            sql.Identifier(f"{target}_gold", "weather_observation_history"))).fetchone() == (Decimal(1),)
+        connection.execute(sql.SQL("UPDATE {} SET temperature_units = 'unknown'").format(
+            sql.Identifier(source, "nws_observation_vintages")))
+    result = run(select="+stg_nws_observation_vintages+")
+    assert result.returncode != 0
+    assert "nws_observations_valid_inputs" in result.stdout
+    with psycopg.connect(dsn) as connection:
+        connection.execute(sql.SQL("UPDATE {} SET temperature_units = 'wmoUnit:degF'").format(
+            sql.Identifier(source, "nws_observation_vintages")))
+    for table, column, bad_value, restore_value in (
+        ("nws_observation_vintages", "temperature_value", "not-a-number", None),
+        ("nws_forecast_hourly_vintages", "source_updated_at", "not-a-time", "2026-11-01T04:00:00Z"),
+        ("nws_forecast_hourly_vintages", "period_end", "not-a-time", "2026-11-01T07:30:00Z"),
+    ):
+        query = sql.SQL("UPDATE {} SET {} = %s").format(sql.Identifier(source, table), sql.Identifier(column))
+        with psycopg.connect(dsn) as connection:
+            connection.execute(query, (bad_value,))
+        result = run(select="source:nws")
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "valid_inputs" in result.stdout
+        with psycopg.connect(dsn) as connection:
+            connection.execute(query, (restore_value,))
