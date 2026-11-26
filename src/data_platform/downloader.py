@@ -47,6 +47,7 @@ class Downloader:
     Responses are fully buffered. Parsing, pagination, and persistence belong to
     the caller. Injected clients remain owned by the caller. Their transport
     should not add its own retries, which would multiply this policy's attempts.
+    min_request_interval spaces request starts within this synchronous instance.
     """
 
     def __init__(
@@ -54,23 +55,30 @@ class Downloader:
         *,
         retry_policy: RetryPolicy | None = None,
         timeout: float = 30.0,
+        min_request_interval: float = 0.0,
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
         uniform: Callable[[float, float], float] = random.uniform,
         now: Callable[[], datetime] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be finite and greater than zero")
+        if not math.isfinite(min_request_interval) or min_request_interval < 0:
+            raise ValueError("min_request_interval must be finite and nonnegative")
         # Transport logs can include API keys in URLs and authentication headers.
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
         self.retry_policy = retry_policy or RetryPolicy()
         self.timeout = timeout
+        self.min_request_interval = min_request_interval
         self._owns_client = client is None
         self._client = client if client is not None else httpx.Client()
         self._sleep = sleep
         self._uniform = uniform
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self._monotonic = monotonic
+        self._last_request_at: float | None = None
 
     def get(
         self,
@@ -92,6 +100,12 @@ class Downloader:
         for attempt in range(1, policy.max_attempts + 1):
             logger.debug("GET attempt %d/%d", attempt, policy.max_attempts)
             retry_after = None
+            # Pace every attempt, including retries and subsequent pages.
+            if self._last_request_at is not None:
+                remaining = self.min_request_interval - (self._monotonic() - self._last_request_at)
+                if remaining > 0:
+                    self._sleep(remaining)
+            self._last_request_at = self._monotonic()
             try:
                 response = self._client.get(
                     url, params=params, headers=request_headers, timeout=self.timeout

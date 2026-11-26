@@ -68,6 +68,7 @@ class EIA930Client:
         self._owns_downloader = downloader is None
         self._downloader = downloader if downloader is not None else Downloader(
             timeout=60.0,
+            min_request_interval=1.0,
             retry_policy=RetryPolicy(base_delay=5.0, max_delay=60.0),
         )
 
