@@ -185,10 +185,10 @@ def test_versioning_and_unrelated_objects_are_rejected(environment):
     assert execute(environment, "backup.sh").returncode != 0
 
 
-@pytest.mark.parametrize("bucket_ready,fail_dbt", [
-    (True, ""), (False, ""), (True, "build"), (True, "run-operation"), (True, "api"),
+@pytest.mark.parametrize("bucket_ready,fail_stage", [
+    (True, ""), (False, ""), (True, "build"), (True, "api"),
 ])
-def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health(environment, bucket_ready, fail_dbt):
+def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health(environment, bucket_ready, fail_stage):
     root = Path(environment["PLATFORM_ROOT"])
     release = root / "releases" / "test-release"
     scripts = release / "docker"
@@ -202,8 +202,8 @@ def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health
     (release / "images.env").write_text("AIRFLOW_IMAGE=test-only\n")
     (root / "tunnel-token").write_text("test-only")
     (root / "dashboard-url").write_text("https://dashboard.example")
-    environment["FAIL_DBT"] = fail_dbt
-    if fail_dbt == "api":
+    environment["FAIL_DBT"] = "build" if fail_stage == "build" else ""
+    if fail_stage == "api":
         environment["FAIL_API_START"] = "1"
     if not bucket_ready:
         bucket = Path(environment["MOCK_BUCKET"])
@@ -212,28 +212,25 @@ def test_deployment_checks_bucket_before_stopping_and_enables_timer_after_health
     log = commands(environment)
     enable = [i for i, c in enumerate(log) if c == ["systemctl", "enable", "--now", "data-platform-backup.timer"]]
     stops = [i for i, c in enumerate(log) if c[0] == "docker" and "stop" in c]
-    if bucket_ready and fail_dbt:
+    if bucket_ready and fail_stage:
         assert result.returncode != 0
         assert not enable
-        if fail_dbt == "api":
+        if fail_stage == "api":
             assert not any(c[0] == "docker" and "up" in c and "airflow-scheduler" in c for c in log)
             assert any(c[0] == "docker" and "logs" in c for c in log)
         else:
             assert not any(c[0] == "docker" and "up" in c and "dashboard" in c for c in log)
-        if fail_dbt == "build":
-            assert not any("retire_legacy_gold_views" in c for c in log)
     elif bucket_ready:
         assert result.returncode == 0, result.stderr
         check = next(i for i, c in enumerate(log) if c[:4] == ["gcloud", "storage", "buckets", "describe"])
         health = next(i for i, c in enumerate(log) if c[0] == "curl" and c[-1] == "https://dashboard.example/api/health")
         build = next(i for i, c in enumerate(log) if c[-2:] == ["dbt", "build"])
-        cleanup = next(i for i, c in enumerate(log) if c[-2:] == ["run-operation", "retire_legacy_gold_views"])
         start = next(i for i, c in enumerate(log) if c[0] == "docker" and "up" in c and "dashboard" in c)
         workers = next(i for i, c in enumerate(log) if c[0] == "docker" and "up" in c and "airflow-scheduler" in c)
         assert "airflow-dag-processor" not in log[start]
         assert "--wait" in log[start] and "600" in log[start]
         assert "--wait" in log[workers] and "600" in log[workers]
-        assert check < stops[0] < build < cleanup < start < workers < health < enable[0]
+        assert check < stops[0] < build < start < workers < health < enable[0]
     else:
         assert result.returncode != 0
         assert not stops and not enable

@@ -46,8 +46,6 @@ def warehouse(tmp_path):
 
     def run(command="build", select=None, exclude=None):
         args = [str(DBT), command, "--project-dir", str(PROJECT), "--profiles-dir", str(PROJECT)]
-        if command == "run-operation":
-            args += ["retire_legacy_gold_views"]
         if select:
             args += ["--select", select]
         if exclude:
@@ -324,78 +322,6 @@ def test_gold_tied_timestamps_have_one_current_version(warehouse):
             )).fetchall() == [(Decimal("77"), "tied")]
 
 
-@pytest.mark.parametrize("legacy", ["none", "cleanup", "build"])
-def test_retire_legacy_gold_views(warehouse, legacy):
-    dsn, source, target, run = warehouse
-    gold = f"{target}_gold"
-    result = run()
-    assert result.returncode == 0, result.stdout + result.stderr
-    old_names = [
-        "electricity_metrics_hourly_latest", "generation_by_fuel_hourly_latest",
-        "electricity_metrics_hourly_history",
-    ]
-    with psycopg.connect(dsn) as connection:
-        original_count = connection.execute(sql.SQL("SELECT count(*) FROM {}").format(
-            sql.Identifier(source, "eia930_region_hourly_vintages"),
-        )).fetchone()
-        if legacy != "none":
-            connection.execute(sql.SQL("CREATE VIEW {} AS SELECT * FROM {}").format(
-                sql.Identifier(gold, old_names[2]),
-                sql.Identifier(target, "electricity_metrics_hourly_vintages"),
-            ))
-            for name, parent in (
-                (old_names[0], old_names[2]),
-                (old_names[1], "generation_by_fuel_hourly_history"),
-            ):
-                connection.execute(sql.SQL("CREATE VIEW {} AS SELECT * FROM {}").format(
-                    sql.Identifier(gold, name), sql.Identifier(gold, parent),
-                ))
-            if legacy == "cleanup":
-                # Failure on the last drop must undo both earlier drops.
-                connection.execute(sql.SQL("CREATE VIEW {} AS SELECT * FROM {}").format(
-                    sql.Identifier(gold, "external_dependency"), sql.Identifier(gold, old_names[2]),
-                ))
-    if legacy == "cleanup":
-        result = run("run-operation")
-        assert result.returncode != 0
-        with psycopg.connect(dsn) as connection:
-            for name in old_names:
-                assert connection.execute("SELECT to_regclass(%s) IS NOT NULL", (f"{gold}.{name}",)).fetchone() == (True,)
-            connection.execute(sql.SQL("DROP VIEW {}").format(sql.Identifier(gold, "external_dependency")))
-    if legacy == "build":
-        # Standard dbt can remove obsolete dependent views during a full build.
-        result = run()
-        assert result.returncode == 0, result.stdout + result.stderr
-    for _ in range(2):
-        result = run("run-operation")
-        assert result.returncode == 0, result.stdout + result.stderr
-    with psycopg.connect(dsn) as connection:
-        names = {row[0] for row in connection.execute(
-            "SELECT viewname FROM pg_views WHERE schemaname = %s", (gold,),
-        )}
-        assert names == {
-            "electricity_demand_hourly_history", "electricity_demand_forecast_hourly_history",
-            "electricity_net_generation_hourly_history", "electricity_total_interchange_hourly_history",
-            "generation_by_fuel_hourly_history",
-        }
-        assert connection.execute(sql.SQL("SELECT count(*) FROM {}").format(
-            sql.Identifier(source, "eia930_region_hourly_vintages"),
-        )).fetchone() == original_count
-
-
-def test_retirement_requires_all_replacements(warehouse):
-    dsn, _, target, run = warehouse
-    result = run()
-    assert result.returncode == 0, result.stdout + result.stderr
-    with psycopg.connect(dsn) as connection:
-        connection.execute(sql.SQL("DROP VIEW {}").format(
-            sql.Identifier(f"{target}_gold", "electricity_demand_forecast_hourly_history"),
-        ))
-    result = run("run-operation")
-    assert result.returncode != 0
-    assert "Build and test the replacement views first" in result.stdout
-
-
 def test_first_deployment_builds_empty_history_views(warehouse, monkeypatch):
     dsn, source, target, run = warehouse
     monkeypatch.setenv("DBT_BRONZE_SCHEMA", source)
@@ -404,8 +330,6 @@ def test_first_deployment_builds_empty_history_views(warehouse, monkeypatch):
         prepare_eia930_sources(connection)
         prepare_eia930_sources(connection)
     result = run()
-    assert result.returncode == 0, result.stdout + result.stderr
-    result = run("run-operation")
     assert result.returncode == 0, result.stdout + result.stderr
     with psycopg.connect(dsn) as connection:
         names = connection.execute(
