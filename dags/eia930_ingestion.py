@@ -1,13 +1,15 @@
 """Ingest EIA-930 vintages and build each dataset's Silver and Gold models."""
 
+import os
 from datetime import datetime, timedelta, timezone
 
-from airflow.providers.standard.operators.bash import BashOperator
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG, Param
 
+from data_platform.orchestration import dbt_build
 
-def ingest_eia930(dataset, params, dag_run, run_id):
+
+def ingest_eia930(dataset, params, dag_run, run_id, ti):
     from data_platform.sources.eia930 import EIA930Client
 
     start, end = params["start"], params["end"]
@@ -23,32 +25,12 @@ def ingest_eia930(dataset, params, dag_run, run_id):
     with EIA930Client() as client:
         return client.ingest(
             dataset,
+            schema=os.getenv("DBT_BRONZE_SCHEMA", "bronze"),
             start=start,
             end=end,
             respondents=params["respondents"] or None,
-            ingestion_run_id=f"{dag_run.dag_id}/{run_id}",
+            ingestion_run_id=f"{dag_run.dag_id}/{run_id}/attempt-{ti.try_number}",
         )
-
-
-def dbt_build(task_id, select, exclude=None):
-    command = f"/opt/data-platform/.venv/bin/dbt --no-use-colors build --select {select}"
-    if exclude:
-        command += f" --exclude {exclude}"
-    return BashOperator(
-        task_id=task_id,
-        bash_command=f"""
-            set -e
-            echo "Starting dbt build: {task_id}"
-            {command}
-            echo "Completed dbt build: {task_id}"
-        """,
-        env={
-            "DBT_TARGET_PATH": "/tmp/dbt/{{ task.task_id }}/target",
-            "DBT_LOG_PATH": "/tmp/dbt/{{ task.task_id }}/logs",
-        },
-        append_env=True,
-        do_xcom_push=False,
-    )
 
 
 with DAG(
@@ -77,9 +59,11 @@ with DAG(
     },
     tags=["eia930", "bronze", "silver", "gold"],
 ) as eia930_dag:
-    for dataset in ("region-data", "fuel-type-data"):
+    for dataset, model in {
+        "region-data": "stg_eia930_region_hourly_vintages",
+        "fuel-type-data": "stg_eia930_fuel_type_hourly_vintages",
+    }.items():
         name = dataset.replace("-", "_")
-        model = f"stg_eia930_{name.removesuffix('_data')}_hourly_vintages"
         bronze = PythonOperator(
             task_id=f"bronze_{name}",
             python_callable=ingest_eia930,

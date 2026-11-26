@@ -1,6 +1,28 @@
 version: 2
 
 models:
+  - name: weather_observation_history
+    description: All collected station observation revisions, with collection-time knowledge intervals.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [location, station_id, period, ingestion_run_id]
+      - unique_grain:
+          arguments:
+            columns: [location, station_id, period]
+          config:
+            where: "known_until is null"
+  - name: weather_forecast_hourly_history
+    description: All collected hourly forecast revisions. Source update time is retained separately from collection-time knowledge intervals.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [location, station_id, period, ingestion_run_id]
+      - unique_grain:
+          arguments:
+            columns: [location, station_id, period]
+          config:
+            where: "known_until is null"
   - name: electricity_demand_hourly_history
     description: All demand revisions per hour and respondent. Knowledge intervals are inclusive at known_from and exclusive at known_until; NULL means current.
     data_tests:

@@ -2,15 +2,11 @@
 
 A reusable Python ingestion platform with Airflow, dbt, Docker, and Postgres.
 
-**Current Data Onboarded:**
-
-- EIA-930 electricity data is polled every 15 minutes, preserves changed versions for
-  point-in-time analysis, and serves a read-only dashboard.
-
 **Live dashboard:** [dataplatform.chuanbinphoe.site](https://dataplatform.chuanbinphoe.site/)
 
 ## Contents
 
+- [Data sources](#data-sources)
 - [Tech stack](#tech-stack)
 - [Local setup](#local-setup)
 - [Architecture](#architecture)
@@ -18,6 +14,13 @@ A reusable Python ingestion platform with Airflow, dbt, Docker, and Postgres.
 - [CI/CD](#cicd)
 - [Development setup and tests](#development-setup-and-tests)
 - [Connect to deployed services](#connect-to-deployed-services)
+
+## Data sources
+
+| Source | Data | Airflow DAG | Schedule |
+| --- | --- | --- | --- |
+| [EIA-930 electricity](docs/data/eia930.md) | Demand, forecasts, generation, and interchange | `eia930_ingestion` | Every 15 minutes |
+| [NWS weather](docs/data/weather.md) | Station observations and hourly forecasts | `nws_ingestion` | Every 15 minutes |
 
 ## Tech stack
 
@@ -49,7 +52,7 @@ flowchart TB
     edge["Cloudflare edge<br/>HTTPS · dataplatform.chuanbinphoe.site"]
     admin["PRIVATE ACCESS<br/>Administrator · laptop"]
     iap["Google Cloud IAP<br/>Authenticated SSH tunnel"]
-    eia["EIA API<br/>Hourly electricity data"]
+    sources["Source APIs<br/>Electricity and weather"]
     backups[("PRIVATE GCS BUCKET<br/>data-platform-pg-backups<br/>Last 7 full backups")]
 
     subgraph vm["GOOGLE CLOUD VM · Private IP only"]
@@ -78,7 +81,7 @@ flowchart TB
     api --> metadata
     processor -->|DAG definitions| metadata
     scheduler -->|Scheduling state| metadata
-    scheduler -->|HTTPS · download| eia
+    scheduler -->|HTTPS · download| sources
     scheduler -->|Ingest + transform · writer| warehouse
     database --- storage
     database -->|pg_dumpall output via docker exec| backup
@@ -90,7 +93,7 @@ flowchart TB
     classDef app fill:#dbeafe,stroke:#3b82f6,color:#1e3a8a
     classDef data fill:#dcfce7,stroke:#16a34a,color:#14532d
     classDef disk fill:#fef3c7,stroke:#d97706,color:#78350f
-    class visitor,admin,eia external
+    class visitor,admin,sources external
     class edge,iap,connector access
     class dashboard,api,scheduler,processor,backup app
     class warehouse,metadata data
@@ -116,7 +119,7 @@ Airflow image for manual commands and exits afterward.
 | `explorer` | Dashboard locally; cloudflared in production | Local port publication or outbound tunnel connection |
 | `tunnel` | cloudflared, dashboard (production only) | Internal HTTP; only the connector may supply visitor IPs |
 | `warehouse` | Dashboard, Postgres | Internal read-only database connection |
-| `pipeline` | Airflow, dbt, database initialization, Postgres | Warehouse writes, metadata, and outbound EIA calls |
+| `pipeline` | Airflow, dbt, database initialization, Postgres | Warehouse writes, metadata, and outbound source API calls |
 
 Production dashboard containers have no internet route and share no network with
 Airflow. The connector has no direct database connection. Containers use service
@@ -162,8 +165,8 @@ cp .env.example .env
 ```
 
 Set `POSTGRES_PASSWORD`, `WAREHOUSE_PASSWORD`, `AIRFLOW_DB_PASSWORD`, a separate random `VIEWER_PASSWORD`,
-`AIRFLOW_ADMIN_PASSWORD`, a random `AIRFLOW_JWT_SECRET`, and `EIA_API_KEY`
-([register here](https://www.eia.gov/opendata/register.php)).
+`AIRFLOW_ADMIN_PASSWORD`, and a random `AIRFLOW_JWT_SECRET`.
+Configure source credentials as described in the [data source guides](#data-sources).
 
 ```sh
 chmod 600 .env
@@ -173,7 +176,7 @@ docker compose up -d --build --wait
 - **Airflow:** <http://localhost:8000>; use the admin credentials in `.env`.
 - **Postgres:** `127.0.0.1:5000`, database `warehouse`; credentials are in `.env`.
 - **Data explorer:** <http://localhost:8080>; read-only Bronze, Silver, and Gold tables and views.
-- Enable `eia930_ingestion` to poll every 15 minutes. Progress and errors appear in task logs.
+- Enable the desired ingestion DAGs listed under [data sources](#data-sources). Progress and errors appear in task logs.
 
 Ports and schemas are configured in `.env`.
 Changing `.env` does not update existing database or Airflow account passwords.
@@ -197,89 +200,67 @@ docker compose run --rm dbt build
 | `docker/airflow_init.py` / `dbt/profiles.yml` | Airflow initialization and dbt warehouse connection |
 | `src/data_platform/dashboard/` / `Dockerfile.dashboard` | Reusable, read-only data explorer and viewer provisioning |
 
-### EIA-930 pipeline
+### Pipeline flow
 
-**Airflow overview:** scheduled runs, task status, and execution times.
-
-![Airflow overview showing EIA-930 run history and task status](docs/screenshots/airflow-overview.png)
-
-**DAG graph:** independent region and fuel pipelines, each flowing through Bronze → Silver → Gold.
-
-![Airflow DAG graph showing the region and fuel Bronze, Silver, and Gold task chains](docs/screenshots/airflow-dag.png)
-
-**Data flow:** shared Python components load source-specific tables; dbt builds
-the downstream views through model references.
-
-**Legend:** blue = shared platform, green = pipeline-specific code/data,
-gray = external source.
+Each dataset follows **Bronze → Silver → Gold**. Source clients use the shared
+downloader and ingestor; dbt validates the source and builds typed Silver views,
+then downstream Gold history views.
 
 ```mermaid
-flowchart TD
-    api["External · EIA API"]
-    download["Shared · Downloader<br/>Retries, backoff, and jitter"]
-    client["EIA-930 · EIA930Client<br/>Pagination and field mapping"]
-    ingest["Shared · PostgresIngestor<br/>Atomic loads; append changed vintages"]
-    api --> download --> client --> ingest
-
-    subgraph bronze["Bronze · source tables"]
-        region_raw["eia930_region_hourly_vintages"]
-        fuel_raw["eia930_fuel_type_hourly_vintages"]
-    end
-    ingest -->|region records| region_raw
-    ingest -->|fuel records| fuel_raw
-
-    subgraph silver["Silver · typed views; all vintages retained"]
-        region_typed["electricity_metrics_hourly_vintages<br/>UTC periods and numeric values"]
-        fuel_typed["generation_by_fuel_hourly_vintages<br/>UTC periods and numeric values"]
-    end
-    region_raw --> region_typed
-    fuel_raw --> fuel_typed
-
-    subgraph gold["Gold · history views"]
-        demand["electricity_demand_hourly_history"]
-        forecast["electricity_demand_forecast_hourly_history"]
-        generation["electricity_net_generation_hourly_history"]
-        interchange["electricity_total_interchange_hourly_history"]
-        fuel_history["generation_by_fuel_hourly_history"]
-    end
-    region_typed --> demand
-    region_typed --> forecast
-    region_typed --> generation
-    region_typed --> interchange
-    fuel_typed --> fuel_history
-
-    classDef default fill:#eaf6e9,stroke:#2e6b35,color:#193a1d
-    classDef shared fill:#e8f1ff,stroke:#1e4e8c,color:#12385c
-    classDef external fill:#f1f3f5,stroke:#59636e,color:#24292f
-    class download,ingest shared
-    class api external
+flowchart LR
+    api["Source API"] --> download["Downloader"]
+    download --> client["Source client"]
+    client --> ingest["PostgresIngestor"]
+    ingest --> bronze["Bronze · source records"]
+    bronze --> silver["Silver · typed views"]
+    silver --> gold["Gold · history views"]
 ```
 
-- **Bronze:** download each dataset and append changed versions in one transaction.
-- **Silver:** validate the source and build typed staging views from `dbt/models/staging/eia930/`.
-- **Gold:** build the dataset's history views from `dbt/models/marts/`.
+Each DAG permits one active run, with independent dataset branches. A downstream
+task runs only after its upstream task succeeds. Gold does not rebuild Silver.
 
-There is one active DAG run at a time. Each downstream task requires its own
-upstream task to succeed. Gold does not rebuild Silver.
+Unchanged polls add no rows; A → B → A retains all three versions. Silver and Gold
+are views, so committed source changes are visible immediately; dbt builds
+validate data and update view definitions.
 
-Unchanged polls add no rows; A → B → A retains all three versions. History keeps
-`observed_at`, `inserted_at`, and `ingestion_run_id`. Silver and Gold are views,
-so committed source changes are visible immediately; dbt builds validate data
-and update view definitions.
+### Adding a data source
+
+All sources use the same platform structure:
+
+| Layer | Responsibility |
+| --- | --- |
+| `sources/<name>.py` | Declare datasets and tables, prepare source schemas, and fetch/map records |
+| `sources.prepare_sources()` | Initialize every registered source before dbt builds |
+| `ingestor.py` | Create common revision columns/indexes and append changed records transactionally |
+| `orchestration.py` | Create dbt tasks with consistent logging and isolated output directories |
+| `dags/<name>_ingestion.py` | Set source parameters and connect Bronze → Silver → Gold |
+| `dbt/models/staging/<name>/` | Type and validate source fields; Gold views expose revision history |
+
+Clients expose `iter_records()`, `ingest()`, and `close()`, and support `with`.
+Both accept an injected downloader and ingestor. Authentication, pagination,
+source fields, and collection windows belong in the source client. Each source
+declares `DATASETS` and implements `source_table_sql(schema, dataset)` for table
+setup. Register new sources in `sources.prepare_sources()`; database initialization
+needs no source-specific imports.
+
+The shared downloader sets the platform User-Agent for all sources. Clients add
+API-specific headers, such as NWS's response format and forecast feature flags.
+
+Airflow supplies run IDs containing the DAG, run, and attempt. Unchanged retries
+add no rows; a later attempt can preserve newly corrected values without colliding
+with records committed by an earlier attempt.
 
 ## Usage
 
-### Gold marts
+Use the read-only explorer to browse Bronze, Silver, and Gold. The
+[data source guides](#data-sources) list tables, views, units, and query examples.
 
-| View in `gold` | Grain |
-| --- | --- |
-| `electricity_demand_hourly_history` | Hour × respondent × version |
-| `electricity_demand_forecast_hourly_history` | Hour × respondent × version |
-| `electricity_net_generation_hourly_history` | Hour × respondent × version |
-| `electricity_total_interchange_hourly_history` | Hour × respondent × version |
-| `generation_by_fuel_hourly_history` | Hour × respondent × fuel × version |
+Gold history views retain revisions with `observed_at`, `inserted_at`, and
+`ingestion_run_id`. For point-in-time queries, `known_from` is inclusive and
+`known_until` is exclusive. These intervals use our collection time rather than
+the source's publication or measurement time.
 
-Use a point-in-time query to retrieve the versions observed as of a UTC cutoff:
+For example, retrieve electricity demand versions known at a UTC cutoff:
 
 ```sql
 SELECT period, respondent, value, value_units
@@ -289,11 +270,8 @@ WHERE known_from <= TIMESTAMPTZ '2026-11-24 00:00:00+00'
        OR known_until IS NULL);
 ```
 
-The cutoff uses collection time, not EIA publication time. Every Gold view retains
-all revisions and their provenance. For current data, use
-`WHERE known_until IS NULL`; current NULL values remain NULL. Electricity views
-share `value` and `value_units` columns; fuel history uses `generation` and
-`generation_units`. The dashboard shows all revisions by default.
+`WHERE known_until IS NULL` selects the latest stored revision for each observation;
+missing values remain null. The dashboard shows all revisions by default.
 
 ## CI/CD
 
@@ -318,7 +296,7 @@ flowchart LR
 
 Actions authenticates to GCP through Workload Identity Federation; application
 secrets remain on the VM. Deployments run one at a time and preserve database
-volumes and the DAG's paused state.
+volumes and each ingestion DAG's paused state.
 
 For Postgres backups, CI/CD also:
 

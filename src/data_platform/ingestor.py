@@ -14,6 +14,42 @@ from psycopg import sql
 logger = logging.getLogger(__name__)
 
 
+def vintage_table_sql(
+    schema: str,
+    table: str,
+    columns: Mapping[str, str],
+    key_columns: Sequence[str],
+) -> sql.Composable:
+    """Build a source table with the platform's shared revision metadata and index.
+
+    Column types are SQL definitions supplied by source modules, never user input.
+    Source modules own their fields and observation identity.
+    """
+    definitions = sql.SQL(",\n").join(
+        sql.SQL("{} {}").format(sql.Identifier(name), sql.SQL(definition))
+        for name, definition in columns.items()
+    )
+    keys = sql.SQL(", ").join(map(sql.Identifier, key_columns))
+    return sql.SQL("""
+        CREATE SCHEMA IF NOT EXISTS {schema};
+        CREATE TABLE IF NOT EXISTS {table} (
+            {columns},
+            observed_at timestamptz NOT NULL,
+            ingestion_run_id text NOT NULL,
+            inserted_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            PRIMARY KEY ({keys}, ingestion_run_id)
+        );
+        CREATE INDEX IF NOT EXISTS {index} ON {table}
+            ({keys}, observed_at DESC, inserted_at DESC);
+    """).format(
+        schema=sql.Identifier(schema),
+        table=sql.Identifier(schema, table),
+        columns=definitions,
+        keys=keys,
+        index=sql.Identifier(table + "_lookup_idx"),
+    )
+
+
 class PostgresIngestor:
     """Each ingest call opens a connection and commits or rolls back one load."""
 
@@ -32,6 +68,10 @@ class PostgresIngestor:
                 "WAREHOUSE_PASSWORD", os.getenv("POSTGRES_PASSWORD")
             ),
         }
+
+    def connect(self):
+        """Open a warehouse connection; callers own its transaction and lifetime."""
+        return psycopg.connect(**self._connection_options, connect_timeout=10)
 
     def ingest(
         self,
@@ -62,7 +102,7 @@ class PostgresIngestor:
         started = monotonic()
         logger.info("Starting load: table=%s run_id=%s", destination.as_string(), ingestion_run_id)
         try:
-            with psycopg.connect(**self._connection_options, connect_timeout=10) as connection:
+            with self.connect() as connection:
                 # One lock per table, before setup and downloading, prevents two
                 # overlapping polls from both deciding the same observation is new.
                 connection.execute(

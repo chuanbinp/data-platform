@@ -9,6 +9,7 @@ __pycache__/
 build/
 dist/
 data/
+!docs/data/
 dbt/target/
 dbt/logs/
 backups/

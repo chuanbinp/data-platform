@@ -12,7 +12,7 @@ from psycopg import sql
 
 from data_platform.dashboard import schemas
 from data_platform.dashboard.provision import provision
-from data_platform.sources.eia930 import DATASETS, _vintage_table_sql
+from data_platform.sources import prepare_sources
 
 logger = logging.getLogger(__name__)
 
@@ -79,15 +79,6 @@ def prepare_schemas(connection, namespaces, owner):
                     sql.Identifier(owner),
                 )
             )
-
-
-def prepare_eia930_sources(connection):
-    """Allow dbt to build empty views before the first ingestion on a fresh VM."""
-    bronze = os.getenv("DBT_BRONZE_SCHEMA", "bronze")
-    for settings in DATASETS.values():
-        connection.execute(_vintage_table_sql(
-            bronze, settings["table"], settings["category_column"],
-        ))
 
 
 def main():
@@ -157,7 +148,7 @@ def main():
             )
     with connect(warehouse) as connection, connection.transaction():
         connection.execute("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
-        prepare_eia930_sources(connection)
+        prepare_sources(connection, os.getenv("DBT_BRONZE_SCHEMA", "bronze"))
         prepare_schemas(connection, schemas(), writer)
         provision(
             connection, viewer, os.environ["VIEWER_PASSWORD"], schemas(), owner=writer
