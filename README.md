@@ -50,6 +50,7 @@ flowchart TB
     admin["PRIVATE ACCESS<br/>Administrator · laptop"]
     iap["Google Cloud IAP<br/>Authenticated SSH tunnel"]
     eia["EIA API<br/>Hourly electricity data"]
+    backups[("PRIVATE GCS BUCKET<br/>data-platform-pg-backups<br/>Last 7 full backups")]
 
     subgraph vm["GOOGLE CLOUD VM · Private IP only"]
         subgraph services["DOCKER COMPOSE · Application services"]
@@ -64,6 +65,7 @@ flowchart TB
             metadata[("AIRFLOW METADATA<br/>DAGs · runs · task state")]
         end
         storage["PERSISTENT DOCKER VOLUMES<br/>warehouse_pgdata · airflow_logs"]
+        backup["HOST BACKUP JOB · systemd<br/>Daily at 3 a.m. New York"]
     end
 
     visitor -->|HTTPS · 443| edge
@@ -79,6 +81,8 @@ flowchart TB
     scheduler -->|HTTPS · download| eia
     scheduler -->|Ingest + transform · writer| warehouse
     database --- storage
+    database -->|pg_dumpall output via docker exec| backup
+    backup -->|HTTPS · compressed SQL| backups
     scheduler -. Task logs .-> storage
 
     classDef external fill:#f1f5f9,stroke:#94a3b8,color:#0f172a
@@ -88,9 +92,9 @@ flowchart TB
     classDef disk fill:#fef3c7,stroke:#d97706,color:#78350f
     class visitor,admin,eia external
     class edge,iap,connector access
-    class dashboard,api,scheduler,processor app
+    class dashboard,api,scheduler,processor,backup app
     class warehouse,metadata data
-    class storage disk
+    class storage,backups disk
     style vm fill:#0f172a,stroke:#475569,color:#f8fafc
     style services fill:#1e293b,stroke:#64748b,color:#f8fafc
     style database fill:#1e293b,stroke:#16a34a,color:#f8fafc
