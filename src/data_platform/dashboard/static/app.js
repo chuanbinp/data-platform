@@ -652,8 +652,9 @@ async function loadPage() {
     if (revision !== state.revision) return;
     await grid.replaceData(data.rows);
     state.hasMore = data.has_more;
-    $("sort-summary").textContent = data.sort.column
-      ? `${data.sort.default ? "Default" : "Sort"}: ${data.sort.column} · ${data.sort.direction === "asc" ? "ascending" : "descending"}`
+    const sortColumns = data.sort.columns || (data.sort.column ? [data.sort.column] : []);
+    $("sort-summary").textContent = sortColumns.length
+      ? `${data.sort.default ? "Default" : "Sort"}: ${sortColumns.join(", then ")} · ${data.sort.direction === "asc" ? "ascending" : "descending"}`
       : "Default row order";
     $("clear-sort").disabled = data.sort.default;
     $("page-label").textContent = `Page ${state.page}`;

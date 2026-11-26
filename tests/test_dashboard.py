@@ -256,6 +256,7 @@ def test_default_observation_sort(explorer):
     assert default["rows"][0]["id"] == 205
     assert default["sort"] == {
         "column": "observed_at",
+        "columns": ["observed_at"],
         "direction": "desc",
         "default": True,
     }
@@ -274,6 +275,47 @@ def test_default_observation_sort(explorer):
     latest = client.get(f"/api/relations/{namespaces[2]}/latest/rows").json()
     assert latest["sort"]["column"] == "last_observed_at"
     assert latest["rows"][0]["id"] == 205
+
+
+@pytest.mark.integration
+def test_layer_sort_defaults_and_manual_override(explorer):
+    client, namespaces, *_ = explorer
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as admin:
+        raw = sql.Identifier(namespaces[0], "sort_examples")
+        admin.execute(sql.SQL("""
+            CREATE TABLE {} (id integer, period timestamptz, observed_at timestamptz);
+        """).format(raw))
+        admin.execute(sql.SQL("""
+            INSERT INTO {} VALUES
+                (1, '2026-11-25T00:00:00Z', '2026-11-25T01:00:00Z'),
+                (2, '2026-11-24T00:00:00Z', '2026-11-26T03:00:00Z'),
+                (3, '2026-11-25T00:00:00Z', '2026-11-25T02:00:00Z'),
+                (4, NULL, NULL)
+        """).format(raw))
+        for namespace in namespaces[1:]:
+            admin.execute(sql.SQL("""
+                CREATE VIEW {} AS SELECT *, observed_at AS known_from FROM {}
+            """).format(sql.Identifier(namespace, "sort_examples"), raw))
+
+    for namespace, columns, expected in zip(namespaces, (
+        ["observed_at"], ["period", "observed_at"], ["period", "known_from"],
+    ), ([2, 3, 1, 4], [3, 1, 2, 4], [3, 1, 2, 4])):
+        url = f"/api/relations/{namespace}/sort_examples/rows"
+        response = client.get(url).json()
+        assert [row["id"] for row in response["rows"]] == expected
+        assert response["sort"] == {
+            "column": columns[0], "columns": columns,
+            "direction": "desc", "default": True,
+        }
+        # Pagination keeps both revisions in order, with no implicit date filter.
+        pages = [client.get(url, params={"page_size": 1, "page": page}).json()
+                 for page in (1, 2)]
+        assert [result["rows"][0]["id"] for result in pages] == expected[:2]
+        manual = client.get(url, params={"sort": "id", "direction": "asc"}).json()
+        assert [row["id"] for row in manual["rows"]] == [1, 2, 3, 4]
+        assert manual["sort"] == {
+            "column": "id", "columns": ["id"], "direction": "asc", "default": False,
+        }
 
 
 @pytest.mark.integration
