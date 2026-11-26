@@ -5,9 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Explore the electricity warehouse. Public, read-only tables and vintage history."
+      content="A reusable data platform with Python, Airflow, dbt, and Postgres. Currently ingests EIA-930 electricity data, preserves point-in-time history, and serves a live read-only dashboard."
     />
     <title>Data Platform · Explorer</title>
+    <link rel="canonical" href="https://dataplatform.chuanbinphoe.site/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Data Platform" />
+    <meta property="og:title" content="Data Platform · Python, Airflow, dbt, and Postgres" />
+    <meta
+      property="og:description"
+      content="A reusable data platform with Python, Airflow, dbt, and Postgres. Currently ingests EIA-930 electricity data, preserves point-in-time history, and serves a live read-only dashboard."
+    />
+    <meta property="og:url" content="https://dataplatform.chuanbinphoe.site/" />
+    <meta property="og:image" content="https://dataplatform.chuanbinphoe.site/static/social-preview.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Data Platform logo and project name." />
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="stylesheet" href="/static/vendor/tabulator.min.css" />
     <link rel="stylesheet" href="/static/style.css" />
@@ -17,8 +31,8 @@
   <body>
     <aside class="sidebar">
       <a class="brand" href="/" aria-label="Data Platform home"
-        ><span class="brand-mark">▥</span
-        ><span>Data Platform<small>DATA WAREHOUSE</small></span></a
+        ><img class="brand-mark" src="/static/favicon.svg" alt="" width="40" height="40" />
+        <span>Data Platform<small>DATA WAREHOUSE</small></span></a
       >
       <label class="search-label" for="relation-search">Find a relation</label>
       <input
