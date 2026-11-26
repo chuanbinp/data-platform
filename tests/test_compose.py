@@ -1,5 +1,6 @@
 """Check the merged deployment configuration without starting containers."""
 
+import io
 import json
 import shutil
 import subprocess
@@ -113,3 +114,61 @@ def test_production_isolation_and_baked_images(tmp_path):
     entrypoint = postgres_mounts["/usr/local/bin/platform-postgres-entrypoint.sh"]
     assert entrypoint["source"] == "/opt/data-platform/postgres-entrypoint.sh"
     assert entrypoint["read_only"]
+
+
+def test_production_airflow_startup_grace_preserves_health_probes(tmp_path):
+    local = configuration(tmp_path)["services"]
+    production = configuration(tmp_path, production=True)["services"]
+    for name in ("airflow-api-server", "airflow-scheduler", "airflow-dag-processor"):
+        health = production[name]["healthcheck"]
+        assert health["test"] == local[name]["healthcheck"]["test"]
+        assert health["start_period"] == "3m0s"
+        assert health["retries"] == local[name]["healthcheck"]["retries"]
+    for services in (local, production):
+        dependencies = services["airflow-dag-processor"]["depends_on"]
+        assert dependencies["airflow-api-server"]["condition"] == "service_healthy"
+        assert dependencies["postgres"]["condition"] == "service_healthy"
+        assert dependencies["airflow-init"]["condition"] == "service_completed_successfully"
+
+
+@pytest.mark.parametrize("status,hostnames,exit_code", [
+    ("healthy", ["current-container"], 0),
+    ("healthy", ["old-container", "current-container"], 0),
+    ("healthy", ["old-container"], 1),
+    ("healthy", [], 1),
+    ("healthy", None, 1),
+    ("unhealthy", ["current-container"], 1),
+])
+def test_dag_processor_probe_checks_own_heartbeat(tmp_path, monkeypatch, status, hostnames, exit_code):
+    import socket
+    import urllib.request
+
+    probe = configuration(tmp_path)["services"]["airflow-dag-processor"]["healthcheck"]["test"]
+    assert probe[:3] == ["CMD", "python", "-c"]
+
+    def respond(url, timeout):
+        assert url == "http://airflow-api-server:8080/api/v2/monitor/health"
+        assert timeout == 5
+        instances = None if hostnames is None else [{"hostname": name} for name in hostnames]
+        return io.BytesIO(json.dumps({"dag_processor": {"status": status, "instances": instances}}).encode())
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "current-container")
+    monkeypatch.setattr(urllib.request, "urlopen", respond)
+    with pytest.raises(SystemExit) as result:
+        exec(probe[3], {})
+    assert int(result.value.code) == exit_code
+
+
+def test_dag_processor_probe_fails_when_api_is_unavailable(tmp_path, monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    probe = configuration(tmp_path)["services"]["airflow-dag-processor"]["healthcheck"]["test"]
+
+    def unavailable(*args, **kwargs):
+        raise urllib.error.URLError("API unavailable")
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    # An uncaught request error exits the probe with a failure, never healthy.
+    with pytest.raises(urllib.error.URLError):
+        exec(probe[3], {})
