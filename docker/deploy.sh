@@ -89,7 +89,6 @@ compose run --rm --no-deps database-init
 compose run --rm --no-deps airflow-init
 echo "Building and validating warehouse views before restarting services"
 compose run --rm --no-deps dbt build
-compose run --rm --no-deps dbt run-operation retire_legacy_gold_views
 # Warm up the API before starting the scheduler and DAG processor on the small VM.
 # Initialization already completed; do not start those one-off services again.
 echo "Starting dashboard and Airflow API"
