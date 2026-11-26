@@ -10,6 +10,7 @@ repository=chuanbinp/data-platform
 pool=data-platform-github
 deployer="github-deployer@$project.iam.gserviceaccount.com"
 runtime="data-platform-vm@$project.iam.gserviceaccount.com"
+backup_bucket=${BACKUP_BUCKET:-data-platform-pg-backups}
 
 gcp() {
     gcloud --project "$project" --quiet "$@"
@@ -24,7 +25,7 @@ gcp compute instances describe "$vm" --zone "$zone" > /dev/null
 echo "Preparing registry and service accounts"
 gcp services enable compute.googleapis.com artifactregistry.googleapis.com \
     iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com \
-    iap.googleapis.com oslogin.googleapis.com
+    iap.googleapis.com oslogin.googleapis.com storage.googleapis.com
 
 if ! gcp artifacts repositories describe data-platform --location "$region" > /dev/null 2>&1; then
     gcp artifacts repositories create data-platform --location "$region" --repository-format docker
@@ -38,6 +39,28 @@ gcp artifacts repositories add-iam-policy-binding data-platform --location "$reg
     --member="serviceAccount:$deployer" --role=roles/artifactregistry.writer > /dev/null
 gcp artifacts repositories add-iam-policy-binding data-platform --location "$region" \
     --member="serviceAccount:$runtime" --role=roles/artifactregistry.reader > /dev/null
+
+echo "Preparing dedicated backup storage"
+if ! gcp storage buckets describe "gs://$backup_bucket" > /dev/null 2>&1; then
+    gcp storage buckets create "gs://$backup_bucket" --location="$region" \
+        --default-storage-class=STANDARD --uniform-bucket-level-access \
+        --public-access-prevention --soft-delete-duration=0 \
+        --labels=data-platform-backup=seven-slots-v1
+fi
+# Reuse only buckets provisioned for this feature, never repurpose an old bucket
+# whose hidden soft-deleted copies might outlive a disabled soft-delete policy.
+gcp storage buckets describe "gs://$backup_bucket" --raw --format=json | \
+    jq -e '.labels["data-platform-backup"] == "seven-slots-v1"' > /dev/null || {
+        echo 'Use a new dedicated BACKUP_BUCKET.' >&2; exit 1;
+    }
+# Do not weaken an existing bucket's retention or delete its historical copies.
+# The backup job validates settings and refuses incompatible buckets.
+gcp storage buckets add-iam-policy-binding "gs://$backup_bucket" \
+    --member="serviceAccount:$runtime" --role=roles/storage.objectUser > /dev/null
+# objectUser cannot inspect bucket settings; this read-only bucket grant can.
+gcp storage buckets add-iam-policy-binding "gs://$backup_bucket" \
+    --member="serviceAccount:$runtime" --role=roles/storage.legacyBucketReader > /dev/null
+echo "Backup bucket: $backup_bucket (set BACKUP_BUCKET in the VM's .env to this name)"
 
 echo "Configuring private VM administration"
 identity=$(gcp compute instances describe "$vm" --zone "$zone" --format='value(serviceAccounts[0].email)')

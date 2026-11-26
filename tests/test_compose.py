@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def configuration(tmp_path, *, production=False):
+def configuration(tmp_path, *, production=False, volume=None):
     # Explicit dummy settings prevent Compose from loading the developer's .env.
     lines = PROJECT.joinpath(".env.example").read_text().splitlines()
     env_file = tmp_path / "env"
@@ -22,6 +22,9 @@ def configuration(tmp_path, *, production=False):
         for line in lines
     )
     env_file.write_text("\n".join(settings))
+    if volume:
+        with env_file.open("a") as stream:
+            stream.write(f"\nPOSTGRES_VOLUME_NAME={volume}\n")
     command = [
         "docker", "compose", "--env-file", str(env_file),
         "--profile", "dbt", "-f", str(PROJECT / "compose.yaml"),
@@ -30,6 +33,39 @@ def configuration(tmp_path, *, production=False):
         command += ["-f", str(PROJECT / "compose.production.yaml")]
     output = subprocess.check_output(command + ["config", "--format", "json"])
     return json.loads(output)
+
+
+def test_production_restore_volume_override(tmp_path):
+    default = configuration(tmp_path, production=True)
+    assert default["volumes"]["warehouse_pgdata"]["name"] == "data-platform_warehouse_pgdata"
+    restored = configuration(tmp_path, production=True, volume="data-platform-restore-test")
+    assert restored["volumes"]["warehouse_pgdata"]["name"] == "data-platform-restore-test"
+    assert restored["volumes"]["airflow_logs"] == default["volumes"]["airflow_logs"]
+
+
+def test_shared_helper_keeps_volume_selection_across_releases(tmp_path):
+    root = tmp_path / "platform"
+    root.mkdir()
+    settings = PROJECT.joinpath(".env.example").read_text().splitlines()
+    root.joinpath(".env").write_text("\n".join(
+        line + "test-only" if line.endswith("=") else line for line in settings
+    ))
+    root.joinpath("postgres-volume.env").write_text(
+        "POSTGRES_VOLUME_NAME=data-platform-restore-selected\n"
+        "POSTGRES_PREVIOUS_VOLUME_NAME=data-platform_warehouse_pgdata\n"
+    )
+    for name in ("first-release", "next-release"):
+        release = tmp_path / name
+        release.mkdir()
+        for filename in ("compose.yaml", "compose.production.yaml"):
+            release.joinpath(filename).symlink_to(PROJECT / filename)
+        release.joinpath("images.env").touch()
+        command = ["bash", "-c", 'root=$1; release=$2; source "$3"; compose config "${@:4}"',
+                   "test", str(root), str(release), str(PROJECT / "docker/platform-common.sh")]
+        config = json.loads(subprocess.check_output(command + ["--format", "json"]))
+        assert config["volumes"]["warehouse_pgdata"]["name"] == "data-platform-restore-selected"
+    environment = subprocess.check_output(command + ["--environment"], text=True)
+    assert "BACKUP_BUCKET=data-platform-pg-backups" in environment.splitlines()
 
 
 def test_local_dashboard_is_loopback_only(tmp_path):

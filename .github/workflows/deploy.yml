@@ -42,6 +42,10 @@ jobs:
       - name: Check deployment script syntax
         run: |
           for script in docker/*.sh; do bash -n "$script"; done
+      - name: Verify real Postgres backup and restore
+        env:
+          RUN_BACKUP_DOCKER_TESTS: "1"
+        run: uv run --no-sync pytest -q tests/test_backup.py -m backup_docker
 
   deploy:
     if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
@@ -110,7 +114,10 @@ jobs:
           printf 'AIRFLOW_IMAGE=%s/airflow@%s\nDASHBOARD_IMAGE=%s/dashboard@%s\n' \
             "$IMAGE_PREFIX" "$AIRFLOW_DIGEST" "$IMAGE_PREFIX" "$DASHBOARD_DIGEST" > images.env
           tar -czf release.tar.gz compose.yaml compose.production.yaml images.env \
-            docker/deploy.sh docker/postgres-entrypoint.sh
+            docker/deploy.sh docker/postgres-entrypoint.sh docker/platform-common.sh \
+            docker/backup.sh docker/restore_1_download.sh \
+            docker/restore_2_swap.sh docker/restore_3_cleanup.sh \
+            docker/data-platform-backup.service docker/data-platform-backup.timer
       - name: Transfer release through IAP
         run: |
           gcloud compute scp release.tar.gz "$VM_NAME:release-$RELEASE.tar.gz" \

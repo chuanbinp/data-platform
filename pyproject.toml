@@ -24,4 +24,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: requires a PostgreSQL database via TEST_DATABASE_URL"]
+markers = [
+    "integration: requires a PostgreSQL database via TEST_DATABASE_URL",
+    "backup_docker: requires Docker and RUN_BACKUP_DOCKER_TESTS=1",
+]
