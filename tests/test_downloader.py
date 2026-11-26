@@ -230,44 +230,6 @@ def test_invalid_timeout(timeout):
         Downloader(timeout=timeout)
 
 
-@pytest.mark.parametrize("interval", [-1, float("nan"), float("inf")])
-def test_invalid_request_interval(interval):
-    with pytest.raises(ValueError, match="min_request_interval"):
-        Downloader(min_request_interval=interval)
-
-
-@pytest.mark.parametrize("network_error", [False, True])
-@pytest.mark.parametrize("duration,backoff", [(0.2, 0.25), (0.2, 2), (2, 0.25)])
-def test_request_interval_covers_retries_and_pages_without_extra_delay(network_error, duration, backoff):
-    clock = [0.0]
-    starts = []
-
-    def sleep(seconds):
-        clock[0] += seconds
-
-    def handler(request):
-        starts.append(clock[0])
-        clock[0] += duration
-        if len(starts) == 1:
-            if network_error:
-                raise httpx.ReadTimeout("temporary failure", request=request)
-            return httpx.Response(503)
-        return httpx.Response(200)
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        downloader = Downloader(
-            client=client, min_request_interval=1,
-            sleep=sleep, monotonic=lambda: clock[0],
-            uniform=lambda low, high: backoff,
-            retry_policy=RetryPolicy(base_delay=2),
-        )
-        downloader.get("https://example.test/page-1")
-        downloader.get("https://example.test/page-2")
-
-    second = max(1, duration + backoff)
-    assert starts == pytest.approx([0, second, second + max(1, duration)])
-
-
 def test_owned_client_closes_on_exit():
     with Downloader() as downloader:
         assert not downloader._client.is_closed

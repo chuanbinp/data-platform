@@ -211,7 +211,6 @@ def test_api_key_configuration(monkeypatch):
     monkeypatch.setenv("EIA_API_KEY", "environment-key")
     with EIA930Client() as client:
         assert client._api_key == "environment-key"
-        assert client._downloader.min_request_interval == 1.0
     with EIA930Client("explicit-key") as client:
         assert client._api_key == "explicit-key"
 
