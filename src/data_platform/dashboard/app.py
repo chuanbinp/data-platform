@@ -17,7 +17,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout, TooManyRequests
 
-from data_platform.dashboard import schemas
+from data_platform.dashboard import SOURCES, relation_source, schemas
 from data_platform.dashboard.security import ApiLimits, RequestBounds
 
 logger = logging.getLogger(__name__)
@@ -195,7 +195,11 @@ def relations():
         """,
             (list(schemas()),),
         ).fetchall()
-    return {"schemas": schemas(), "relations": rows}
+    return {
+        "schemas": schemas(),
+        "sources": [{"id": source["id"], "label": source["label"]} for source in SOURCES],
+        "relations": [dict(row, source=relation_source(row["name"])) for row in rows],
+    }
 
 
 @app.get("/api/relations/{schema}/{table}/columns")

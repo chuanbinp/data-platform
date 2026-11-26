@@ -12,6 +12,8 @@ let refreshing = false;
 const state = {
   relations: [],
   schemas: [],
+  sources: [],
+  sourceOpen: {},
   selected: null,
   columns: [],
   page: 1,
@@ -442,51 +444,99 @@ function setColumns(columns) {
   }
 }
 
+function createRelationButton(relation) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "relation-link";
+  button.id = `relation-${JSON.stringify([relation.schema, relation.name])}`;
+  const active =
+    state.selected?.schema === relation.schema &&
+    state.selected?.name === relation.name;
+  button.classList.toggle("active", active);
+  if (active) button.setAttribute("aria-current", "page");
+
+  const symbol = document.createElement("span");
+  symbol.className = "relation-symbol";
+  symbol.textContent = relation.kind === "view" ? "◫" : "▦";
+  const name = document.createElement("span");
+  name.className = "relation-name";
+  name.textContent = relation.name;
+  button.append(symbol, name);
+  button.addEventListener("click", () => selectRelation(relation));
+  return button;
+}
+
+function createSchemaGroup(schema, relations) {
+  const group = document.createElement("section");
+  group.className = "schema-group";
+  const heading = document.createElement("div");
+  heading.className = "schema-heading";
+  heading.title = schema;
+  const dot = document.createElement("span");
+  dot.className = schemaMarkerClass(schema);
+  const count = document.createElement("small");
+  count.textContent = relations.length;
+  const layer = SCHEMA_LAYERS[state.schemas.indexOf(schema)] || schema;
+  heading.append(dot, document.createTextNode(layer), count);
+  group.append(heading);
+
+  for (const relation of relations.sort((a, b) => a.name.localeCompare(b.name))) {
+    group.append(createRelationButton(relation));
+  }
+  return group;
+}
+
 function renderRelations() {
+  const nav = $("relations");
   const query = $("relation-search").value.toLowerCase().trim();
-  $("relations").replaceChildren();
-  for (const schema of state.schemas) {
-    const matches = state.relations.filter(
-      (item) =>
-        item.schema === schema &&
-        `${item.schema}.${item.name}`.toLowerCase().includes(query),
-    );
-    const group = document.createElement("section");
-    group.className = "schema-group";
-    const heading = document.createElement("div");
-    heading.className = "schema-heading";
-    const dot = document.createElement("span");
-    dot.className = schemaMarkerClass(schema);
+  const focusedId = nav.contains(document.activeElement)
+    ? document.activeElement.id : "";
+  nav.replaceChildren();
+
+  for (const source of state.sources) {
+    const matches = state.relations.filter((relation) => {
+      if (relation.source !== source.id) return false;
+      const layer = SCHEMA_LAYERS[state.schemas.indexOf(relation.schema)] || "";
+      const text = `${source.label} ${relation.schema}.${relation.name} ${layer}`;
+      return text.toLowerCase().includes(query);
+    });
+    if (!matches.length) continue;
+
+    const group = document.createElement("details");
+    group.className = "source-group";
+    group.open = Boolean(query || state.sourceOpen[source.id]);
+    const heading = document.createElement("summary");
+    heading.className = "source-heading";
+    heading.id = `source-${source.id}`;
+    heading.addEventListener("click", () => {
+      // Save before the native toggle so an immediate search preserves the choice.
+      if (!query) state.sourceOpen[source.id] = !group.open;
+    });
     const count = document.createElement("small");
     count.textContent = matches.length;
-    heading.append(dot, document.createTextNode(schema), count);
+    heading.append(document.createTextNode(source.label), count);
     group.append(heading);
-    for (const relation of matches) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "relation-link";
-      const active =
-        state.selected?.schema === relation.schema &&
-        state.selected?.name === relation.name;
-      button.classList.toggle("active", active);
-      if (active) button.setAttribute("aria-current", "page");
-      const symbol = document.createElement("span");
-      symbol.className = "relation-symbol";
-      symbol.textContent = relation.kind === "view" ? "◫" : "▦";
-      const name = document.createElement("span");
-      name.className = "relation-name";
-      name.textContent = relation.name;
-      button.append(symbol, name);
-      button.addEventListener("click", () => selectRelation(relation));
-      group.append(button);
+
+    for (const schema of state.schemas) {
+      const layerRelations = matches.filter((relation) => relation.schema === schema);
+      if (layerRelations.length) group.append(createSchemaGroup(schema, layerRelations));
     }
-    $("relations").append(group);
+    nav.append(group);
   }
+
+  if (!nav.childElementCount) {
+    const message = document.createElement("p");
+    message.className = "nav-message";
+    message.textContent = query ? "No matching tables or views." : "No tables or views yet.";
+    nav.append(message);
+  }
+  if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
 }
 
 async function discover() {
   const data = await getJSON("/api/relations");
   state.schemas = data.schemas;
+  state.sources = data.sources;
   state.relations = data.relations;
   const tables = data.relations.filter(
     (relation) => relation.kind === "table",
@@ -535,6 +585,7 @@ function selectRelation(relation) {
     if (browsing) $("mobile-tables").focus();
   }
   state.selected = relation;
+  state.sourceOpen[relation.source] = true;
   state.page = 1;
   state.sort = null;
   state.direction = "desc";

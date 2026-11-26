@@ -16,8 +16,34 @@ pytest.importorskip("fastapi")
 pytest.importorskip("psycopg_pool")
 from fastapi.testclient import TestClient
 
+from data_platform.dashboard import relation_source
 from data_platform.dashboard.app import app, encode
 from data_platform.dashboard.provision import provision
+
+
+@pytest.mark.parametrize("name", [
+    "eia930_region_hourly_vintages", "eia930_fuel_type_hourly_vintages",
+    "electricity_metrics_hourly_vintages", "generation_by_fuel_hourly_vintages",
+    "electricity_demand_hourly_history", "electricity_demand_forecast_hourly_history",
+    "electricity_net_generation_hourly_history", "electricity_total_interchange_hourly_history",
+    "generation_by_fuel_hourly_history",
+])
+def test_electricity_relation_source(name):
+    assert relation_source(name) == "eia930"
+
+
+@pytest.mark.parametrize("name", [
+    "nws_locations", "nws_observation_vintages", "nws_forecast_hourly_vintages",
+    "weather_observation_vintages", "weather_forecast_hourly_vintages",
+    "weather_observation_history", "weather_forecast_hourly_history",
+])
+def test_weather_relation_source(name):
+    assert relation_source(name) == "nws"
+
+
+@pytest.mark.parametrize("name", ["readings", "typed", "weathered_data", "electricity"])
+def test_unrecognized_relation_source(name):
+    assert relation_source(name) == "other"
 
 
 def test_exact_values_and_utc():
@@ -116,6 +142,12 @@ def test_browsing_pagination_filters_and_precision(explorer):
         (namespaces[0], "readings"),
         (namespaces[1], "typed"),
     }
+    assert response.json()["sources"] == [
+        {"id": "eia930", "label": "Electricity (EIA930)"},
+        {"id": "nws", "label": "Weather (NWS)"},
+        {"id": "other", "label": "Other"},
+    ]
+    assert all(r["source"] == "other" for r in response.json()["relations"])
     base = f"/api/relations/{namespaces[0]}/readings"
     columns = client.get(f"{base}/columns").json()["columns"]
     assert {c["name"] for c in columns} == {
@@ -140,6 +172,32 @@ def test_browsing_pagination_filters_and_precision(explorer):
     ).json()
     assert len(third["rows"]) == 5 and not third["has_more"]
     assert client.get("/api/health").status_code == 200
+
+
+@pytest.mark.integration
+def test_source_discovery_across_configured_schemas(explorer):
+    client, namespaces, *_ = explorer
+    names = (
+        ("eia930_region_hourly_vintages", "nws_locations"),
+        ("electricity_metrics_hourly_vintages", "weather_observation_vintages"),
+        ("generation_by_fuel_hourly_history", "weather_forecast_hourly_history"),
+    )
+    expected = {}
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as admin:
+        for index, (schema, pair) in enumerate(zip(namespaces, names)):
+            for name, source in zip(pair, ("eia930", "nws")):
+                statement = (
+                    "CREATE TABLE {} (value integer)" if index == 0
+                    else "CREATE VIEW {} AS SELECT 1 AS value"
+                )
+                admin.execute(sql.SQL(statement).format(sql.Identifier(schema, name)))
+                expected[schema, name] = (source, "table" if index == 0 else "view")
+    found = {
+        (row["schema"], row["name"]): (row["source"], row["kind"])
+        for row in client.get("/api/relations").json()["relations"]
+    }
+    assert expected.items() <= found.items()
+    assert found[namespaces[0], "readings"] == ("other", "table")
 
 
 @pytest.mark.integration
