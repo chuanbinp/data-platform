@@ -20,8 +20,20 @@ IMAGE = re.search(r"image: (postgres:17@sha256:[0-9a-f]+)", (PROJECT / "compose.
 def environment(tmp_path):
     root = tmp_path / "platform"
     root.mkdir()
-    (root / "current").symlink_to(PROJECT)
-    (root / ".env").write_text('BACKUP_BUCKET=test-backups\n')
+    # Real Compose needs the same files as a deployed release. Keep test settings
+    # separate from the checkout and the developer's credentials.
+    release = root / "releases" / "fixture-release"
+    release.mkdir(parents=True)
+    for name in ("compose.yaml", "compose.production.yaml"):
+        shutil.copyfile(PROJECT / name, release / name)
+    (release / "images.env").touch()
+    (root / "current").symlink_to(release)
+    env_lines = PROJECT.joinpath(".env.example").read_text().splitlines()
+    (root / ".env").write_text("\n".join(
+        "BACKUP_BUCKET=test-backups" if line.startswith("BACKUP_BUCKET=")
+        else line + "test-only" if line.endswith("=") else line
+        for line in env_lines
+    ) + "\n")
     objects = tmp_path / "objects.json"
     objects.write_text('{"items":[]}')
     settings = tmp_path / "bucket.json"
