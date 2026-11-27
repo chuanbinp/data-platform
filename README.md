@@ -369,7 +369,7 @@ gcloud compute ssh data-platform \
   --project=hpml-cp3541 \
   --zone=us-east1-c \
   --tunnel-through-iap \
-  -- -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -- -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
   -o ExitOnForwardFailure=yes \
   -L 127.0.0.1:8888:127.0.0.1:8000 \
   -L 127.0.0.1:5433:127.0.0.1:5000
@@ -380,8 +380,11 @@ gcloud compute ssh data-platform \
 | Airflow | <http://localhost:8888> | `AIRFLOW_ADMIN_USERNAME` / `AIRFLOW_ADMIN_PASSWORD` |
 | Postgres | `127.0.0.1:5433`, database `warehouse` | `VIEWER_USER` / `VIEWER_PASSWORD` (read-only) |
 
-Keep the SSH session open. Type `exit` to release the ports; rerun the SSH command
-if disconnected. With `psql` installed, connect from another laptop terminal:
+`-N` keeps the tunnel open without starting a remote shell. Leave this terminal
+running while using the services. Press **Ctrl+C** to stop the tunnel and release
+the ports; closing the browser does not stop it. Rerun the command to reconnect.
+
+With `psql` installed, connect from another laptop terminal:
 
 ```sh
 psql -h 127.0.0.1 -p 5433 -U warehouse_viewer -d warehouse -W
