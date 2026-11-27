@@ -737,7 +737,9 @@ $("pause").addEventListener("click", () => {
   state.paused = !state.paused;
   const label = state.paused ? "Resume updates" : "Pause updates";
   $("pause").querySelector(".button-label").textContent = label;
-  $("pause").querySelector(".button-icon").textContent = state.paused ? "▶" : "⏸";
+  $("pause").querySelector("path").setAttribute("d", state.paused
+    ? "M7 4v16l13-8z"
+    : "M6 4h4v16H6z M14 4h4v16h-4z");
   $("pause").setAttribute("aria-label", label);
   $("pause").title = label;
   $("pause").setAttribute("aria-pressed", String(state.paused));
